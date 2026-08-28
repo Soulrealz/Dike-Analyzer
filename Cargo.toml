@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/dike-core", "crates/dike-lang-anchor", "crates/dike-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+walkdir = "2"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = "0.4"
+tracing-subscriber = "0.3"
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+blake3 = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"

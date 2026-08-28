@@ -1,0 +1,79 @@
+[[source]]
+id = "sealevel-attacks"
+kind = "archive"
+url = "https://codeload.github.com/coral-xyz/sealevel-attacks/tar.gz/refs/heads/master"
+title = "Sealevel Attacks — canonical Solana vulnerability classes"
+license = "Apache-2.0 (code samples); cite, do not redistribute verbatim"
+retrieved = "2026-08-28"
+sha256 = ""
+class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap"]
+
+[[source]]
+id = "neodyme-pitfalls"
+kind = "page"
+url = "https://neodyme.io/en/blog/solana_common_pitfalls/"
+title = "Neodyme — Solana common pitfalls"
+license = "All rights reserved; fetched for local indexing only, not redistributed"
+retrieved = "2026-08-28"
+sha256 = ""
+class_tags = ["missing-signer", "unchecked-arithmetic", "missing-owner-check"]
+
+[[source]]
+id = "anchor-constraints"
+kind = "page"
+url = "https://www.anchor-lang.com/docs/references/account-constraints"
+title = "Anchor account constraint reference"
+license = "Apache-2.0"
+retrieved = "2026-08-28"
+sha256 = ""
+class_tags = ["pda-validation-gap", "missing-authority-binding"]
+
+[[source]]
+id = "notes-local"
+kind = "local"
+url = "corpus/notes"
+title = "Derived notes (original work)"
+license = "Ours"
+retrieved = "2026-08-28"
+sha256 = ""
+class_tags = []
+
+# The three entries below (ottersec-audit-reports, zellic-audit-reports,
+# sec3-audit-reports) are commented out because their `url` points at a
+# blog *index* page, not an individual report. Fetching an index page
+# yields navigation chrome and teaser text, not finding text, and that
+# junk would get indexed, embedded, and cited alongside real content.
+# Before `dike corpus fetch` is first run, someone with network access
+# must curate specific individual report URLs (e.g. permalinks to actual
+# PDF/HTML audit reports) and swap them in below — the entries are left
+# intact so that curation is a URL swap, not a rewrite.
+#
+# [[source]]
+# id = "ottersec-audit-reports"
+# kind = "page"
+# url = "https://osec.io/blog"
+# title = "OtterSec — public audit report index"
+# license = "All rights reserved; fetched for local indexing only, not redistributed"
+# retrieved = "2026-08-28"
+# sha256 = ""
+# class_tags = ["missing-signer", "missing-owner-check", "pda-validation-gap"]
+#
+# [[source]]
+# id = "zellic-audit-reports"
+# kind = "page"
+# url = "https://www.zellic.io/blog"
+# title = "Zellic — public audit report index"
+# license = "All rights reserved; fetched for local indexing only, not redistributed"
+# retrieved = "2026-08-28"
+# sha256 = ""
+# class_tags = ["missing-authority-binding", "unchecked-arithmetic", "pda-validation-gap"]
+#
+# [[source]]
+# id = "sec3-audit-reports"
+# kind = "page"
+# url = "https://www.sec3.dev/blog"
+# title = "sec3 — public audit report index"
+# license = "All rights reserved; fetched for local indexing only, not redistributed"
+# retrieved = "2026-08-28"
+# sha256 = ""
+# class_tags = ["missing-signer", "missing-owner-check", "unchecked-arithmetic"]

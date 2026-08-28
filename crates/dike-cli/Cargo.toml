@@ -1,0 +1,23 @@
+[package]
+name = "dike-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dike"
+path = "src/main.rs"
+
+[dependencies]
+dike-core = { path = "../dike-core" }
+dike-lang-anchor = { path = "../dike-lang-anchor" }
+clap.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

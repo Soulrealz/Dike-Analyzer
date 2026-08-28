@@ -1,0 +1,42 @@
+# ---- Build artifacts ----------------------------------------------------
+/target
+**/*.rs.bk
+
+# ---- Secrets ------------------------------------------------------------
+# GEMINI_API_KEY is read from the environment (crates/dike-core/src/llm/).
+# Never commit it; never log it; never put it in a report.
+.env
+.env.*
+!.env.example
+
+# ---- Corpus: fetched content is NOT ours to redistribute ----------------
+# Spec §7: audit reports are published, not public-domain. We commit the
+# manifest (corpus/sources.toml) and the fetch code; never the fetched text.
+# corpus/notes/ IS committed — those are our own derived notes.
+/corpus/cache
+/corpus/index
+/corpus/.sources.toml.tmp.*
+
+# ---- Local retrieval stores ---------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+
+# ---- Agent scaffolding --------------------------------------------------
+# SDD task briefs, implementer reports and the run ledger. Working state for
+# AI-assisted development, not project history. Durable decisions from it are
+# distilled into docs/PROJECT_CONTEXT.md — keep that current instead.
+/.superpowers
+
+# ---- Editor / OS --------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+/.idea
+
+# ---- Profiling / coverage ----------------------------------------------
+*.profraw
+perf.data*
+flamegraph.svg
