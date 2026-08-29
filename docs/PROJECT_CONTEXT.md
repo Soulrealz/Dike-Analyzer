@@ -241,8 +241,20 @@ notes and *is* committed.
   real `corpus fetch`.
 - `cargo fmt --check` fails repo-wide; there is no `rustfmt.toml` and the house
   style does not match rustfmt defaults. Must be settled before CI adds a fmt gate.
-- `html_to_text` silently truncates trailing content on an unterminated attribute
-  quote. Bounded (loss, not markup leak) but inconsistent with invariant 6.
+- `html_to_text` (`crates/dike-core/src/retrieval/fetch.rs`) silently drops
+  text during resync. When a malformed tag's quoted attribute never resolves
+  (an unterminated quote, or two colliding malformed openers), the scanner
+  recovers by skipping to the next `<` or `>` — and whatever text sat between
+  the malformed tag and that point is discarded. Content loss only: the
+  variant that used to leak a `<script>`/`<style>` body as plain text is
+  closed, and so is the one that leaked a fragment of a *legal* `<` inside an
+  attribute (`title="a < b"`). Both have regression tests. Guard for what
+  remains open: `html_to_text_keeps_trailing_content_when_a_balanced_odd_looking_tag_resyncs`.
+
+  The scanner is hand-rolled and took six fix rounds, each round's own new
+  code becoming the next round's defect. If corpus quality ever disappoints,
+  replacing it with a real HTML parser is one decision rather than another
+  six rounds — see the round-by-round reasoning in `fetch.rs`'s own comments.
 
 ---
 

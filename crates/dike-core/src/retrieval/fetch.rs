@@ -19,6 +19,25 @@ const BLOCK_TAGS: &[&str] = &[
     "header", "footer", "pre", "blockquote", "table", "ul", "ol",
 ];
 
+/// Upper bound, in characters, on how far [`html_to_text`]'s tag scanner
+/// will look for a closing `>` before giving up. A real HTML tag is never
+/// remotely this long, so bounding the scan means an unterminated or
+/// odd-parity quoted attribute costs at most one tag's worth of input —
+/// never the remainder of the document (see the "Known gaps" note this
+/// constant retires in `docs/PROJECT_CONTEXT.md`).
+const MAX_TAG_SCAN: usize = 500;
+
+/// Result of scanning forward from a malformed tag's `<` for the next raw
+/// `>` or `<`, ignoring quote state. See `raw_scan` inside [`html_to_text`].
+enum RawScan {
+    /// A `>` was found first, at this index.
+    Close(usize),
+    /// A `<` was found first, at this index.
+    Open(usize),
+    /// Neither a `>` nor a `<` appears anywhere in the remainder.
+    Neither,
+}
+
 /// Strip HTML tags and decode entities into plain text (D23).
 ///
 /// `<script>`/`<style>` element *contents* are dropped, not merely their
@@ -33,6 +52,13 @@ pub fn html_to_text(html: &str) -> String {
     let n = chars.len();
     let mut out = String::with_capacity(html.len());
     let mut i = 0;
+
+    // A `<` only starts a tag if the next character is ASCII-alphabetic,
+    // `/`, or `!` (covers ordinary tags, closing tags, comments, and
+    // doctype) — otherwise it's literal text, e.g. `a < b`. Used both at
+    // the top level (below) and, as of Round 6, inside `scan_tag_end`'s
+    // quoted state, so the two can never drift apart.
+    let is_tag_start = |c: char| c.is_ascii_alphabetic() || c == '/' || c == '!';
 
     let matches_at = |idx: usize, pat: &str| -> bool {
         let pat: Vec<char> = pat.chars().collect();
@@ -51,17 +77,55 @@ pub fn html_to_text(html: &str) -> String {
     // `chars[start] == '<'`), tracking quote state so a `>` inside a
     // single- or double-quoted attribute value does not end the tag early.
     // Returns `None` if the tag is unterminated (no `>` before end of
-    // input). Used both for ordinary tags and (for the opening delimiter
-    // only) for `<script>`/`<style>`.
+    // input) OR if no closing `>` turns up within `MAX_TAG_SCAN` characters
+    // — the latter also covers an unterminated or odd-parity quote, which
+    // would otherwise hold the scanner in "quoted" mode indefinitely and
+    // swallow everything after it. Every `None` case is handled by the
+    // caller as "not a tag after all" (see below), so bounding the scan
+    // here is what keeps a malformed tag from costing more than itself.
+    // Used both for ordinary tags and (for the opening delimiter only) for
+    // `<script>`/`<style>`.
+    // Round 5, Item 1: a `<` inside a quoted attribute value is often not
+    // legal HTML at all — it's strong evidence of a second, unrelated
+    // malformed opener whose own stray quote is about to collide with
+    // (toggle off the quote state of) a later, real tag. Abandoning the
+    // scan in that case (returning `None`) hands control to the `raw_scan`
+    // fallback, which stops at the next `<` and resumes the outer loop
+    // right there, so normal recognition (including the script/style
+    // check) runs fresh on it. Without this, a flat (non-nesting) quote
+    // tracker can be toggled back to "unquoted" by an even number of stray
+    // quote characters from unrelated malformed openers, landing exactly on
+    // a later real `<script>`/`<style>` tag's own `>` — which the malformed
+    // tag's scan then consumes as its own close, resuming just past it and
+    // inside the script/style body, so `<script`/`<style` is never matched
+    // and the body leaks as ordinary text.
+    //
+    // Round 6, Item 1: but a literal `<` inside a quoted attribute value
+    // IS legal HTML (`title="a < b"`), and the round-5 rule above fired on
+    // it too, leaking a raw markup fragment (e.g. `< b">`) into extracted
+    // text on well-formed input. The two cases are distinguishable by what
+    // follows the `<`, using the exact same `is_tag_start` predicate the
+    // top-level loop already uses to decide whether a `<` begins a tag at
+    // all: a collision opener looks like `<b `, `<script>` — tag-like,
+    // ASCII-alphabetic/`/`/`!` next — while a legitimate in-attribute `<`
+    // is followed by a space or other ordinary content. Abandon the scan
+    // (return `None`) only in the tag-like case; otherwise treat the `<` as
+    // ordinary quoted content and keep scanning, so the round-5 collision
+    // fix and this round's legal-`<` fix hold at the same time.
     let scan_tag_end = |start: usize| -> Option<usize> {
         let mut j = start + 1;
+        let limit = n.min(start + 1 + MAX_TAG_SCAN);
         let mut quote: Option<char> = None;
-        while j < n {
+        while j < limit {
             let c = chars[j];
             match quote {
                 Some(q) => {
                     if c == q {
                         quote = None;
+                    } else if c == '<'
+                        && matches!(chars.get(j + 1).copied(), Some(nc) if is_tag_start(nc))
+                    {
+                        return None;
                     }
                 }
                 None => {
@@ -77,6 +141,36 @@ pub fn html_to_text(html: &str) -> String {
         None
     };
 
+    // Fallback for when `scan_tag_end` gives up (cap exceeded, EOF, or an
+    // odd-parity quote holding it open indefinitely): re-scan forward from
+    // `start` (the `<`) ignoring quote state entirely, looking for whichever
+    // comes first — the next raw `>` or the next raw `<`. Round 3 looked
+    // only for `>`, which is wrong when a *later, real* tag's `>` is what
+    // gets found: resuming just past it skips over that tag's own opening
+    // delimiter (e.g. `<script`), so recognition never runs on it and,
+    // for `<script>`/`<style>`, stripping mode is never entered — the exact
+    // leak this scanner exists to prevent, just reached through the
+    // fallback instead of around it. A `<` is far likelier to begin a real
+    // tag than our malformed one, so when it comes first we hand control
+    // back to the outer loop right there instead of past it.
+    //
+    // Returns `RawScan::Close(idx)` when a `>` is found before any `<`,
+    // `RawScan::Open(idx)` when a `<` is found first (or the two coincide —
+    // `>` cannot open a tag, so a `<` at the same position never happens,
+    // but if some future change made ties possible, preferring `<` is the
+    // safe choice), or `RawScan::Neither` when the remainder has no `>` and
+    // no `<` at all.
+    let raw_scan = |start: usize| -> RawScan {
+        for (k, &c) in chars.iter().enumerate().skip(start + 1) {
+            match c {
+                '>' => return RawScan::Close(k),
+                '<' => return RawScan::Open(k),
+                _ => {}
+            }
+        }
+        RawScan::Neither
+    };
+
     while i < n {
         if chars[i] != '<' {
             out.push(chars[i]);
@@ -88,7 +182,7 @@ pub fn html_to_text(html: &str) -> String {
         // `/`, or `!` (covers ordinary tags, closing tags, comments, and
         // doctype). Otherwise it's literal text — e.g. `a < b`.
         let next = chars.get(i + 1).copied();
-        let starts_tag = matches!(next, Some(c) if c.is_ascii_alphabetic() || c == '/' || c == '!');
+        let starts_tag = matches!(next, Some(c) if is_tag_start(c));
         if !starts_tag {
             out.push(chars[i]);
             i += 1;
@@ -112,7 +206,39 @@ pub fn html_to_text(html: &str) -> String {
             } else {
                 "</style".chars().collect()
             };
-            let j = scan_tag_end(i).map(|p| p + 1).unwrap_or(n);
+            // If the opening `<script`/`<style` tag itself is malformed (no
+            // closing `>` within the bound), do NOT fall through to the
+            // literal-`<` path — that would walk the attributes *and the
+            // entire script/style body* as ordinary text, silently
+            // disabling script stripping for this element. Instead, fall
+            // back to a raw scan (ignoring quotes) for whichever comes first,
+            // the next `>` or the next `<`:
+            //   - a `>` first is still the end of the opening tag, so
+            //     script-stripping mode is entered from there as normal;
+            //   - a `<` first more likely belongs to a real, later tag (see
+            //     `raw_scan`'s doc comment) — resume the outer loop at that
+            //     `<` so recognition runs on it fresh, rather than skipping
+            //     past it and disabling stripping for whatever it is;
+            //   - neither existing means there is no `>` at all, so (unlike
+            //     the ordinary-tag path below) drop to end of input rather
+            //     than guess: with no delimiter separating attributes from
+            //     body, the undifferentiated remainder could be real
+            //     JavaScript/CSS, and losing it beats leaking it.
+            let open_end = match scan_tag_end(i) {
+                Some(e) => e,
+                None => match raw_scan(i) {
+                    RawScan::Close(p) => p,
+                    RawScan::Open(p) => {
+                        i = p;
+                        continue;
+                    }
+                    RawScan::Neither => {
+                        i = n;
+                        continue;
+                    }
+                },
+            };
+            let j = open_end + 1;
 
             let mut found = None;
             let mut k = j;
@@ -130,8 +256,38 @@ pub fn html_to_text(html: &str) -> String {
             continue;
         }
 
-        let j = scan_tag_end(i); // index of the closing '>', or None if unterminated
-        let tag_body: String = chars[i + 1..j.unwrap_or(n)].iter().collect();
+        // No closing '>' within the bound — either the tag is far longer
+        // than any real tag, or its quote never resolved. Do NOT treat the
+        // `<` as literal text and resume one character later by default:
+        // that would leak the (possibly huge) tag interior — attributes,
+        // base64 data-URI payloads, etc. — into the output. Instead, fall
+        // back to a raw scan (ignoring quote state) for whichever comes
+        // first, the next `>` or the next `<`:
+        //   - a `>` first: drop everything from `<` through it, emitting
+        //     nothing (unchanged from before).
+        //   - a `<` first: that `<` is far likelier to begin a real tag
+        //     than our malformed one (a genuine `<script>`, say, that would
+        //     otherwise have its opening delimiter skipped past — see
+        //     `raw_scan`'s doc comment). Resume the outer loop right there
+        //     so normal recognition runs on it, emitting nothing for the
+        //     skipped span.
+        //   - neither: unlike the `<script>`/`<style>` path, there is no
+        //     ambiguity to protect against here — with no `>` anywhere, this
+        //     can't be a tag at all, so treat the `<` as literal text and
+        //     resume one character later, recovering the trailing content
+        //     instead of dropping it to EOF for no benefit.
+        let Some(j) = scan_tag_end(i) else {
+            match raw_scan(i) {
+                RawScan::Close(p) => i = p + 1,
+                RawScan::Open(p) => i = p,
+                RawScan::Neither => {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+            continue;
+        };
+        let tag_body: String = chars[i + 1..j].iter().collect();
         let is_closing = tag_body.starts_with('/');
         let tag_name: String = tag_body
             .trim_start_matches('/')
@@ -142,7 +298,7 @@ pub fn html_to_text(html: &str) -> String {
         if BLOCK_TAGS.contains(&tag_name.as_str()) && (is_closing || tag_name == "br") {
             out.push('\n');
         }
-        i = j.map(|p| p + 1).unwrap_or(n);
+        i = j + 1;
     }
 
     let decoded = out
@@ -532,5 +688,403 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("live-docs-page.txt")).unwrap();
         assert!(text.len() > 1000, "a docs page should yield real text");
         assert!(!text.contains("<div"), "tags must not survive normalization");
+    }
+
+    // --- Item 1 (round 2): an unterminated/odd-parity quote must cost at
+    // most the malformed tag it appears in, never the remainder of the
+    // document. Pre-fix (quoted-mode with no bound), each of the four cases
+    // below was observed by running them against the round-1 code:
+    //
+    //   html_to_text(r#"<a title="x> rest of doc here <b>bold</b>"#)
+    //     -> ""
+    //   html_to_text(r#"before <a title="never closes tail content here"#)
+    //     -> "before"
+    //   html_to_text(r#"<a title="odd><p>Real content</p>"#)
+    //     -> ""
+    //   html_to_text(r#"<a href="unterminated stray" more text <p>Real content</p>"#)
+    //     -> "Real content"   (already survives pre-fix, kept below as a
+    //        regression guard — see comment on that test)
+
+    #[test]
+    fn html_to_text_recovers_trailing_content_after_an_unterminated_quote() {
+        // Round-1 bug: the opening `"` before `x` never finds its match, so
+        // the scanner stayed in "quoted" mode for the rest of the input and
+        // the whole document (including "bold") was lost, yielding "".
+        let text = html_to_text(r#"<a title="x> rest of doc here <b>bold</b>"#);
+        assert_ne!(text, "", "pre-fix this was empty: whole document swallowed");
+        assert!(text.contains("rest of doc here"), "got: {text:?}");
+        assert!(text.contains("bold"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_recovers_content_after_a_quote_unterminated_at_end_of_input() {
+        // Round-1 bug: no closing quote ever appears before end-of-input,
+        // so everything from the opening quote onward (here, the whole
+        // "tail content here" clause) was dropped; pre-fix output was just
+        // "before".
+        //
+        // Round 2 recovered "tail content here" by falling back to
+        // literal-`<` (resume one char later). Round 3 replaced that with a
+        // raw scan for the next `>` that, finding none here either, dropped
+        // straight to end of input — losing "tail content here" again, which
+        // is what this test's own name contradicted until now.
+        //
+        // Round 4 (Item 2) restores the Round-2 behavior, but only for
+        // ordinary tags: this is a plain `<a>`, not `<script>`/`<style>`, so
+        // there is no script/style body it could be mistaken for. With no
+        // `>` anywhere, this cannot be real markup at all, so the `<` is
+        // literal text and "tail content here" is unambiguously recoverable
+        // prose. (The `<script>`/`<style>` path keeps the drop-to-EOF
+        // behavior instead — see the comment at its `RawScan::Neither` arm.)
+        let text = html_to_text(r#"before <a title="never closes tail content here"#);
+        assert_eq!(text, "before <a title=\"never closes tail content here", "got: {text:?}");
+        assert!(text.contains("tail content here"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_recovers_content_after_an_odd_quote_spanning_two_tags() {
+        // Round-1 bug: a single unmatched `"` before `odd` put the scanner
+        // in quoted mode; with no bound it stayed quoted through the *next*
+        // tag's `<p>...</p>` too, so "Real content" itself was lost and
+        // output was "".
+        let text = html_to_text(r#"<a title="odd><p>Real content</p>"#);
+        assert_ne!(text, "", "pre-fix this was empty");
+        assert!(text.contains("Real content"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_keeps_trailing_content_when_a_balanced_odd_looking_tag_resyncs() {
+        // This case's quotes are actually balanced (open before
+        // "unterminated, close after "stray"), so this was never the
+        // quoted-mode-forever bug — the scanner resyncs on the next
+        // unquoted `>`, which happens to belong to the *following* `<p>`
+        // tag. That silently drops "more text" (a separate, narrower
+        // resync issue the task explicitly does not ask us to fix), but it
+        // already preserves trailing real content both before and after
+        // this change. Kept as a regression guard.
+        let text = html_to_text(
+            r#"<a href="unterminated stray" more text <p>Real content</p>"#,
+        );
+        assert_eq!(text, "Real content", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_bounds_the_scan_for_a_tag_far_longer_than_any_real_tag() {
+        // A tag body far past MAX_TAG_SCAN with an unterminated quote must
+        // not consume trailing real content either, exercising the cap
+        // itself rather than only the unterminated-quote path.
+        //
+        // Round 2 asserted only `text.contains("after cap")`, which passes
+        // even though ~1000 chars of `long_junk` leak into the output
+        // verbatim (the round-2 fallback treated the unparseable `<` as
+        // literal text and resumed one char later). Assert the junk is
+        // ABSENT too, so this test can actually fail for the reason its
+        // name claims.
+        let long_junk = "x".repeat(MAX_TAG_SCAN * 2);
+        let html = format!(r#"<a title="{long_junk}unterminated then <p>after cap</p>"#);
+        let text = html_to_text(&html);
+        assert!(text.contains("after cap"), "got: {text:?}");
+        assert!(
+            !text.contains(&"x".repeat(50)),
+            "malformed tag interior leaked into output; got a {}-char string",
+            text.len()
+        );
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_an_over_long_data_uri_image_tag() {
+        // A base64 data-URI `<img>` easily exceeds MAX_TAG_SCAN. Pre-fix,
+        // scan_tag_end gives up, the `<` is treated as literal text, and
+        // the entire tag - src attribute and ~2000-char base64 payload
+        // included - is emitted verbatim as text.
+        let base64_payload = "A".repeat(2000);
+        let html = format!(r#"<img src="data:image/png;base64,{base64_payload}">after"#);
+        let text = html_to_text(&html);
+        assert!(
+            !text.contains(&"A".repeat(100)),
+            "leaked base64 payload into output; got: {} chars",
+            text.len()
+        );
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_an_attribute_heavy_div_tag() {
+        // A `<div>` with enough attributes to exceed MAX_TAG_SCAN. Pre-fix,
+        // all 30 `data-attr-N` attributes leak verbatim ahead of the real
+        // content.
+        let mut attrs = String::new();
+        for k in 0..30 {
+            attrs.push_str(&format!(r#" data-attr-{k}="value{k}""#));
+        }
+        let html = format!(r#"<div{attrs}>Real content</div>"#);
+        let text = html_to_text(&html);
+        assert!(!text.contains("data-attr-"), "got: {text:?}");
+        assert!(text.contains("Real content"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_an_over_long_script_open_tag_body() {
+        // The serious case: a `<script>` tag whose opening delimiter alone
+        // (nonce/integrity/crossorigin/query-string attributes, as real
+        // analytics/tag-manager scripts carry) exceeds MAX_TAG_SCAN.
+        // Pre-fix, scan_tag_end gives up on the OPENING tag, so the script
+        // branch bails to the literal-`<` path entirely: script-stripping
+        // mode is never entered, and the scanner walks both the attributes
+        // and the full script body - including the payload here - as
+        // ordinary prose. This is the "naive strip inlines the page's
+        // JavaScript" failure the whole design exists to prevent.
+        let mut attrs = String::new();
+        for k in 0..40 {
+            attrs.push_str(&format!(r#" data-x{k}="{}""#, "z".repeat(20)));
+        }
+        let html = format!(r#"<script{attrs}>alert('leaked secret code');</script>after"#);
+        let text = html_to_text(&html);
+        assert!(
+            !text.contains("alert('leaked secret code')"),
+            "script body leaked into output; got: {text:?}"
+        );
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_script_reached_through_a_malformed_tag_collision() {
+        // Round 3's fallback (`raw_scan_gt`) resumes at the first raw `>`
+        // anywhere after a malformed `<`, with no regard for what that `>`
+        // belongs to. Here the malformed tag is `<div data-x="unterminated`
+        // (the quote never closes), and the next raw `>` is the one that
+        // closes the *real* `<script>` tag's opening delimiter. Resuming
+        // just past that `>` skips over the `<script` prefix entirely, so
+        // the script/style recognition check never runs on it and its body
+        // is walked as ordinary text.
+        let html = r#"<div data-x="unterminated<script>alert('leak minimal');</script>after"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("alert"),
+            "script body leaked into output; got: {text:?}"
+        );
+        assert!(
+            !text.contains("leak minimal"),
+            "script body leaked into output; got: {text:?}"
+        );
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_script_reached_through_a_cap_triggered_collision() {
+        // Same collision as above, but the malformed tag's attribute is long
+        // enough to blow MAX_TAG_SCAN, so this exercises the `scan_tag_end`
+        // cap path (not just the odd-parity-quote path) hitting the same
+        // fallback.
+        let junk = "x".repeat(600);
+        let html = format!(
+            r#"<div data-x="unterminated{junk}<script>alert('leak cap');</script>after"#
+        );
+        let text = html_to_text(&html);
+        assert!(
+            !text.contains("alert"),
+            "script body leaked into output; got: {} chars",
+            text.len()
+        );
+        assert!(
+            !text.contains("leak cap"),
+            "script body leaked into output; got: {} chars",
+            text.len()
+        );
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_style_reached_through_a_malformed_tag_collision() {
+        // Same collision, proving the fix is not script-specific: `<style>`
+        // must be recognized the same way.
+        let html = r#"<div data-x="unterminated<style>body{color:red} /* leak style */</style>after"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("color:red"),
+            "style body leaked into output; got: {text:?}"
+        );
+        assert!(
+            !text.contains("leak style"),
+            "style body leaked into output; got: {text:?}"
+        );
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_handles_a_collision_with_an_ordinary_tag_sanely() {
+        // The intervening `<` here begins an ordinary tag (`<p>`), not
+        // script/style. Per Item 1, the scanner should resume at that `<`
+        // and let normal tag recognition run on it, rather than skipping
+        // past whatever `>` comes first. Nothing should leak, and the real
+        // paragraph content should survive.
+        let html = r#"<div data-x="unterminated<p>Real content</p>after"#;
+        let text = html_to_text(html);
+        assert!(!text.contains("unterminated"), "got: {text:?}");
+        assert!(text.contains("Real content"), "got: {text:?}");
+        assert!(text.contains("after"), "got: {text:?}");
+    }
+
+    // --- Round 5, Item 1: quote-parity collision in `scan_tag_end` -----
+    //
+    // Two malformed, unrelated attribute-openers whose stray quote
+    // characters sum to an EVEN count toggle `scan_tag_end`'s flat
+    // (non-nesting) quote tracker back to "unquoted" exactly at a later
+    // real `<script>`/`<style>` tag's own `>`. The outer malformed tag's
+    // scan then treats that `>` as its own close and resumes just past it —
+    // inside the script/style body — so `matches_at(i, "<script")` never
+    // fires and the body leaks as ordinary text. An ODD number of stray
+    // quotes instead leaves the scanner unclosed, hitting the `None`
+    // fallback (`raw_scan`) safely — which is why every prior round's
+    // fixtures (all odd-parity) never caught this.
+
+    #[test]
+    fn html_to_text_does_not_leak_script_through_even_parity_quote_collision() {
+        // Two stray `"` (one in `<a title="`, one in `<b title="`) is an
+        // even count: the flat quote tracker started in `<a`'s scan sees
+        // `"` (quote on), then `"` again from `<b title="` (quote off) —
+        // right before the real `<script>`'s own closing `>`, so that `>`
+        // reads as unquoted and ends the malformed `<a ...>` tag. The
+        // scanner resumes just past it, inside the script body, and
+        // `<script` is never matched.
+        let html = r#"<a title="<b title="<script>alert('x')</script>"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("alert('x')"),
+            "script body leaked into output; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_style_through_even_parity_quote_collision() {
+        let html = r#"<a title="<b title="<style>body{color:red}</style>"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("color:red"),
+            "style body leaked into output; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_script_through_three_way_even_parity_collision() {
+        // Generalizes beyond two colliding openers: three malformed
+        // attribute-openers (`<a t="`, `<b t="`, `<c t="`) each contribute
+        // one stray `"`, and their sum is odd... except the *third* opener
+        // (`<c t="`) is itself unclosed when the scan reaches `<script`, so
+        // only the first two stray quotes have toggled the tracker by the
+        // time `<script>`'s own `>` is reached — an even count at that
+        // point, same as the two-opener case, and it still leaks pre-fix.
+        let html = r#"<a t="<b t="<c t="<script>alert(2)</script>"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("alert(2)"),
+            "script body leaked into output; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_script_through_even_parity_single_quote_collision() {
+        // Same mechanism with single quotes instead of double quotes.
+        let html = r#"<a title='<b title='<script>alert(4)</script>"#;
+        let text = html_to_text(html);
+        assert!(
+            !text.contains("alert(4)"),
+            "script body leaked into output; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_text_quote_parity_determines_whether_the_script_collision_leaks() {
+        // The mechanism made explicit side by side: ONE stray quote
+        // (odd parity) leaves `scan_tag_end` unclosed and hits the safe
+        // `raw_scan` fallback; TWO stray quotes (even parity) toggle the
+        // tracker back to "unquoted" right at the real `<script>`'s `>`,
+        // so the malformed tag's scan succeeds and consumes it — the
+        // fallback never runs, and the body leaks. Both must be clean
+        // after the fix; only the even case leaked before it.
+        let odd = r#"<a title="<script>alert('odd')</script>"#;
+        let even = r#"<a title="<b title="<script>alert('even')</script>"#;
+
+        let odd_text = html_to_text(odd);
+        assert!(
+            !odd_text.contains("alert('odd')"),
+            "odd-parity case was already expected to be safe; got: {odd_text:?}"
+        );
+
+        let even_text = html_to_text(even);
+        assert!(
+            !even_text.contains("alert('even')"),
+            "even-parity case is the collision this round fixes; got: {even_text:?}"
+        );
+    }
+
+    // --- Round 6, Item 1: a legal `<` inside a quoted attribute value ---
+    //
+    // Round 5's rule (abandon the scan on ANY `<` seen while quoted) fixed
+    // the collision case but also fired on legal HTML like
+    // `title="a < b"`, leaking a raw markup fragment (`< b">`) into
+    // extracted text. Pre-fix, verified by extracting this exact
+    // `html_to_text` into a scratchpad binary and running it:
+    //
+    //   html_to_text(r#"<div title="a < b">content</div>"#)
+    //     -> "< b\">content"
+    //   html_to_text(r#"<span data-cond="x < y">visible</span>"#)
+    //     -> "< y\">visible"
+    //   html_to_text(r#"<div title="a < b"><script>alert('x')</script>after"#)
+    //     -> "< b\">after"
+
+    #[test]
+    fn html_to_text_does_not_leak_a_legal_less_than_inside_a_quoted_attribute() {
+        let text = html_to_text(r#"<div title="a < b">content</div>"#);
+        assert!(
+            !text.contains("< b\">"),
+            "pre-fix leaked markup fragment; got: {text:?}"
+        );
+        assert_eq!(text, "content", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_does_not_leak_a_legal_less_than_inside_a_data_attribute() {
+        let text = html_to_text(r#"<span data-cond="x < y">visible</span>"#);
+        assert!(
+            !text.contains("< y\">"),
+            "pre-fix leaked markup fragment; got: {text:?}"
+        );
+        assert_eq!(text, "visible", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_still_abandons_scan_on_tag_like_less_than_double_quote() {
+        // Round 5's collision fix must still hold: `<b` (letter after `<`)
+        // is tag-like, so the scan still abandons and the script body
+        // still does not leak.
+        let text = html_to_text(r#"<a title="<b title="<script>alert('x')</script>"#);
+        assert_eq!(text, "", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_still_abandons_scan_on_tag_like_less_than_single_quote() {
+        let text = html_to_text(r#"<a title='<b title='<script>alert(4)</script>"#);
+        assert_eq!(text, "", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_unaffected_quoted_greater_than_still_works() {
+        let text = html_to_text(r#"<a title="x>y">link</a>"#);
+        assert_eq!(text, "link", "got: {text:?}");
+    }
+
+    #[test]
+    fn html_to_text_handles_legal_less_than_and_a_following_script_together() {
+        // The combined case: a legal `<` inside a quoted attribute must not
+        // leak a fragment, AND a genuine following `<script>` must still be
+        // recognized and stripped — both properties at once.
+        let text = html_to_text(r#"<div title="a < b"><script>alert('x')</script>after"#);
+        assert!(
+            !text.contains("< b\">"),
+            "pre-fix leaked markup fragment; got: {text:?}"
+        );
+        assert!(!text.contains("alert('x')"), "script body leaked; got: {text:?}");
+        assert_eq!(text, "after", "got: {text:?}");
     }
 }

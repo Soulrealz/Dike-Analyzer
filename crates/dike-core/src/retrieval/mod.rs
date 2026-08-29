@@ -5,8 +5,10 @@
 //! blockchain or smart-contract framework — it operates on plain text,
 //! headings, and finding-ID-shaped boundaries.
 
+pub mod bm25;
 pub mod document;
 pub mod fetch;
 
+pub use bm25::Bm25Index;
 pub use document::{chunk_by_finding, corpus_hash, load_manifest, Document, Source, SourceKind};
 pub use fetch::{extract_archive, fetch_source, html_to_text, load_cached, FetchOutcome};

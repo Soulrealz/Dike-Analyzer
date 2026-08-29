@@ -130,6 +130,21 @@ fn rewrite_manifest_hashes(path: &Path, new_hashes: &HashMap<String, String>) ->
 /// atomic, so readers only ever see the old or the new content, never a
 /// partial write.
 fn write_atomically(path: &Path, contents: &str) -> anyhow::Result<()> {
+    let tmp_path = tmp_path_for(path)?;
+
+    std::fs::write(&tmp_path, contents)
+        .with_context(|| format!("writing {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()))?;
+    Ok(())
+}
+
+/// Compute the temp-file path [`write_atomically`] writes to before
+/// renaming over `path`. Pulled out as its own function so the
+/// same-directory invariant it must hold — a `rename` across filesystems is
+/// not atomic and fails at runtime — can be tested directly rather than
+/// only inferred from reading the rename call.
+fn tmp_path_for(path: &Path) -> anyhow::Result<PathBuf> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -137,13 +152,7 @@ fn write_atomically(path: &Path, contents: &str) -> anyhow::Result<()> {
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(file_name);
     tmp_name.push(format!(".tmp.{}", std::process::id()));
-    let tmp_path = dir.join(tmp_name);
-
-    std::fs::write(&tmp_path, contents)
-        .with_context(|| format!("writing {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()))?;
-    Ok(())
+    Ok(dir.join(tmp_name))
 }
 
 /// Given the text after a bare TOML key (e.g. `" = \"sealevel-attacks\""`),
@@ -290,8 +299,24 @@ class_tags = []
         assert!(out.contains("class_tags = []"));
     }
 
+    // Scope note (round 2, item 2): `rewrite_leaves_no_temp_file_behind`
+    // below only proves cleanup — it passes just as well against a naive
+    // `std::fs::write(path, contents)`, which never creates a temp file in
+    // the first place, so "no debris left over" is true either way and
+    // does not exercise atomicity at all. Genuinely proving atomicity (that
+    // a crash mid-write can never leave `path` truncated) needs fault
+    // injection — killing the process between the write and the rename —
+    // which isn't practical to do in-process from a `#[test]`. What *is*
+    // practical and is tested here instead is the precondition atomicity
+    // depends on: the temp file must land in the same directory (therefore
+    // the same filesystem) as the target, since `rename` is only atomic
+    // within one filesystem and a naive implementation using, say,
+    // `std::env::temp_dir()` for the temp file would compile fine, pass a
+    // "no debris" check, and then fail (or silently stop being atomic) at
+    // runtime the first time `corpus/` and the OS temp dir are on
+    // different filesystems.
     #[test]
-    fn rewrite_is_atomic_and_leaves_no_temp_file_behind() {
+    fn rewrite_leaves_no_temp_file_behind() {
         let (dir, path) = fixture_copy();
         let mut new_hashes = HashMap::new();
         new_hashes.insert("alpha".to_string(), "fresh-hash".to_string());
@@ -299,12 +324,33 @@ class_tags = []
         rewrite_manifest_hashes(&path, &new_hashes).unwrap();
 
         // Only the manifest itself remains in the directory; the temp file
-        // used for the atomic write-then-rename was cleaned up by the
-        // rename (which moves, not copies).
+        // used for the write-then-rename was cleaned up by the rename
+        // (which moves, not copies). This alone does not distinguish an
+        // atomic write from `std::fs::write` — see the scope note above.
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(entries, vec![std::ffi::OsString::from("sources.toml")], "got: {entries:?}");
+    }
+
+    #[test]
+    fn write_atomically_places_its_temp_file_in_the_same_directory_as_the_target() {
+        // A rename is only atomic within a single filesystem, so the temp
+        // path must share a parent directory with the target. This is the
+        // property a naive "write the temp file to the OS temp dir, then
+        // rename into place" implementation would violate — it would still
+        // leave no debris (the rename would either succeed by copying, on
+        // some platforms, or fail outright), but it would not be a same-
+        // filesystem atomic rename.
+        let (_dir, path) = fixture_copy();
+        let tmp_path = tmp_path_for(&path).unwrap();
+
+        assert_eq!(
+            tmp_path.parent(),
+            path.parent(),
+            "temp file must be in the same directory as the target for rename to be atomic"
+        );
+        assert_ne!(tmp_path, path, "temp file must not collide with the target path");
     }
 }
