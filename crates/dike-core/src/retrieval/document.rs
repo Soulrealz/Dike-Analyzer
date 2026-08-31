@@ -41,6 +41,16 @@ pub struct Source {
     pub class_tags: Vec<String>,
     #[serde(default)]
     pub kind: SourceKind,
+    /// For `Archive` sources: keep only entries under these paths, relative
+    /// to the archive's top-level directory (a codeload tarball wraps
+    /// everything in `<repo>-<ref>/`). Empty means keep everything, which
+    /// is what a small single-purpose repository wants.
+    ///
+    /// This exists because a large repository's `.md` files are mostly not
+    /// corpus material — a README, a changelog and issue templates would
+    /// otherwise be indexed, embedded and cited alongside the rules.
+    #[serde(default)]
+    pub include_paths: Vec<String>,
 }
 
 /// A retrievable chunk of text derived from a [`Source`].
@@ -236,7 +246,7 @@ mod tests {
             id: "os-report".into(), url: "https://example.invalid/r".into(),
             title: "T".into(), license: "l".into(), retrieved: "2026-08-28".into(),
             sha256: "h".into(), class_tags: vec!["missing-signer".into()],
-            kind: SourceKind::Page,
+            kind: SourceKind::Page, include_paths: vec![],
         }
     }
 
@@ -266,19 +276,53 @@ class_tags = ["missing-signer"]
         assert_eq!(sources[0].class_tags, vec!["missing-signer".to_string()]);
     }
 
-    #[test]
-    fn real_manifest_parses_and_has_four_active_sources() {
-        // Three blog-index sources (ottersec/zellic/sec3) are commented out
-        // in corpus/sources.toml pending curation of individual report
-        // URLs; the remaining four (sealevel-attacks, neodyme-pitfalls,
-        // anchor-constraints, notes-local) must still parse cleanly.
+    fn real_manifest() -> Vec<Source> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("corpus")
             .join("sources.toml");
-        let sources = load_manifest(&path).unwrap();
-        assert_eq!(sources.len(), 4);
+        load_manifest(&path).unwrap()
+    }
+
+    #[test]
+    fn real_manifest_parses_and_has_six_active_sources() {
+        // Three audit-report sources (ottersec/zellic/sec3) remain
+        // commented out in corpus/sources.toml: they are PDF corpora and
+        // the fetch pipeline reads no PDFs. The six active ones —
+        // sealevel-attacks, neodyme-pitfalls, anchor-constraints,
+        // notes-local, solana-security-standard, solana-audit-taxonomy —
+        // must still parse cleanly.
+        assert_eq!(real_manifest().len(), 6);
+    }
+
+    #[test]
+    fn every_filtered_source_in_the_real_manifest_is_an_archive() {
+        // `include_paths` only means anything for an archive: nothing reads
+        // it on a page or a local source, so a filter set on one would look
+        // like a scoping rule while silently doing nothing.
+        for s in real_manifest() {
+            if !s.include_paths.is_empty() {
+                assert!(
+                    matches!(s.kind, SourceKind::Archive),
+                    "{} sets include_paths but is not an archive",
+                    s.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_active_source_is_missing_a_hash_field_or_a_title() {
+        // Cheap manifest hygiene: every entry the fetcher will act on needs
+        // an id, a url, a title and a licence recorded, because all four
+        // reach either the cache path or a citation.
+        for s in real_manifest() {
+            assert!(!s.id.is_empty());
+            assert!(!s.url.is_empty(), "{} has no url", s.id);
+            assert!(!s.title.is_empty(), "{} has no title", s.id);
+            assert!(!s.license.is_empty(), "{} has no licence", s.id);
+        }
     }
 
     #[test]

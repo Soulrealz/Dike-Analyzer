@@ -349,7 +349,11 @@ fn is_unsafe_archive_path(path: &str) -> bool {
 /// entries with a path-traversal-shaped path are skipped, entries whose
 /// bytes are not valid UTF-8 are skipped rather than failing the whole
 /// archive, and the result is sorted by path for determinism.
-pub fn extract_archive(gz: &[u8], keep_ext: &[&str]) -> anyhow::Result<Vec<(String, String)>> {
+pub fn extract_archive(
+    gz: &[u8],
+    keep_ext: &[&str],
+    include_paths: &[String],
+) -> anyhow::Result<Vec<(String, String)>> {
     let decoder = flate2::read::GzDecoder::new(gz);
     let mut archive = tar::Archive::new(decoder);
     let mut out = Vec::new();
@@ -359,6 +363,9 @@ pub fn extract_archive(gz: &[u8], keep_ext: &[&str]) -> anyhow::Result<Vec<(Stri
         let path = entry.path()?.to_string_lossy().into_owned();
 
         if is_unsafe_archive_path(&path) {
+            continue;
+        }
+        if !is_included(&path, include_paths) {
             continue;
         }
         let Some(ext) = Path::new(&path).extension().and_then(|e| e.to_str()) else {
@@ -376,7 +383,36 @@ pub fn extract_archive(gz: &[u8], keep_ext: &[&str]) -> anyhow::Result<Vec<(Stri
     }
 
     out.sort_by(|a, b| a.0.cmp(&b.0));
+    // A filter that matches nothing is a typo, not an empty repository. Left
+    // unreported it would cache an empty file, index zero documents, and
+    // leave every later command succeeding while retrieving nothing.
+    if out.is_empty() && !include_paths.is_empty() {
+        anyhow::bail!(
+            "no archive entries matched include_paths {:?} — check the paths against the \
+             repository layout (they are relative to the archive's top-level directory)",
+            include_paths
+        );
+    }
     Ok(out)
+}
+
+/// Is this archive entry under one of `include_paths`?
+///
+/// An empty filter keeps everything. Otherwise the archive's top-level
+/// directory is stripped first: a codeload tarball names every entry
+/// `<repo>-<ref>/...`, so a filter written against the repository layout
+/// (`content/rules/`) would match nothing at all if compared to the raw
+/// entry path. That mismatch is silent — the fetch would succeed with an
+/// empty corpus — which is why it has its own test.
+fn is_included(path: &str, include_paths: &[String]) -> bool {
+    if include_paths.is_empty() {
+        return true;
+    }
+    let relative = path.split_once('/').map(|(_, rest)| rest).unwrap_or(path);
+    include_paths.iter().any(|prefix| {
+        let prefix = prefix.trim_start_matches('/');
+        relative == prefix || relative.starts_with(prefix)
+    })
 }
 
 /// The result of [`fetch_source`], per the change policy (D21).
@@ -387,11 +423,22 @@ pub enum FetchOutcome {
     /// The freshly fetched content hashes the same as the manifest.
     Unchanged,
     /// The freshly fetched content differs from the manifest's recorded
-    /// hash. The new content is written to the cache regardless — three of
-    /// the four active sources are live web pages that change weekly, so
-    /// hard-failing on a mismatch would make the second-ever fetch an
-    /// error.
-    Changed { old: String, new: String },
+    /// hash. The new content is written to the cache regardless — several
+    /// active sources are live web pages or living repositories that change
+    /// weekly, so hard-failing on a mismatch would make the second-ever
+    /// fetch an error.
+    ///
+    /// `old_bytes` is the size of the previously cached text (0 when there
+    /// was none) and `new_bytes` the size just written. The hashes say
+    /// *that* a source changed; the sizes are what distinguishes "the
+    /// repository added findings" from "the fetch broke and we cached a
+    /// login page", and only the second needs a human.
+    Changed {
+        old: String,
+        new: String,
+        old_bytes: usize,
+        new_bytes: usize,
+    },
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -433,7 +480,7 @@ pub fn fetch_source(http: &HttpClient, s: &Source, cache_dir: &Path) -> anyhow::
             let bytes = http
                 .get_bytes(&s.url)
                 .map_err(|e| anyhow::anyhow!("fetching {}: {e}", s.url))?;
-            extract_archive(&bytes, &["rs", "md"])?
+            extract_archive(&bytes, &["rs", "md"], &s.include_paths)?
                 .into_iter()
                 .map(|(path, content)| format!("# {path}\n{content}\n\n"))
                 .collect()
@@ -444,6 +491,10 @@ pub fn fetch_source(http: &HttpClient, s: &Source, cache_dir: &Path) -> anyhow::
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("creating cache dir {}", cache_dir.display()))?;
     let cache_path = cache_dir.join(format!("{}.txt", s.id));
+    // Read before the write below overwrites it.
+    let old_bytes = std::fs::metadata(&cache_path)
+        .map(|m| m.len() as usize)
+        .unwrap_or(0);
     std::fs::write(&cache_path, &text)
         .with_context(|| format!("writing {}", cache_path.display()))?;
 
@@ -453,7 +504,12 @@ pub fn fetch_source(http: &HttpClient, s: &Source, cache_dir: &Path) -> anyhow::
     } else if s.sha256 == new_hash {
         FetchOutcome::Unchanged
     } else {
-        FetchOutcome::Changed { old: s.sha256.clone(), new: new_hash }
+        FetchOutcome::Changed {
+            old: s.sha256.clone(),
+            new: new_hash,
+            old_bytes,
+            new_bytes: text.len(),
+        }
     };
     Ok(outcome)
 }
@@ -496,6 +552,7 @@ mod tests {
             retrieved: "2026-08-28".into(),
             sha256: "".into(),
             class_tags: vec![],
+            include_paths: vec![],
             kind: SourceKind::Page,
         }
     }
@@ -617,7 +674,7 @@ mod tests {
             ("repo/b.md", "# notes"),
             ("repo/c.png", "\u{0}binary"),
         ]);
-        let out = extract_archive(&gz, &["rs", "md"]).unwrap();
+        let out = extract_archive(&gz, &["rs", "md"], &[]).unwrap();
         let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"repo/a.rs"));
         assert!(names.contains(&"repo/b.md"));
@@ -625,9 +682,91 @@ mod tests {
     }
 
     #[test]
+    fn include_paths_are_matched_under_the_archives_top_level_directory() {
+        // The trap this test exists for: a codeload tarball names every
+        // entry `<repo>-<ref>/...`, but a filter is naturally written
+        // against the repository layout (`content/rules/`). Comparing the
+        // filter to the raw entry path matches nothing, and the failure is
+        // silent — an empty corpus, not an error.
+        let gz = build_test_tar_gz(&[
+            ("repo-main/content/rules/SOL-001.md", "rule one"),
+            ("repo-main/content/rules/SOL-002.md", "rule two"),
+            ("repo-main/README.md", "readme"),
+            ("repo-main/CHANGELOG.md", "changelog"),
+        ]);
+        let out = extract_archive(&gz, &["md"], &["content/rules/".to_string()]).unwrap();
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "repo-main/content/rules/SOL-001.md",
+                "repo-main/content/rules/SOL-002.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_include_paths_keeps_everything() {
+        // The existing single-purpose sources have no filter and must keep
+        // behaving exactly as before.
+        let gz = build_test_tar_gz(&[("repo-main/a.md", "a"), ("repo-main/deep/b.md", "b")]);
+        let out = extract_archive(&gz, &["md"], &[]).unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn several_include_paths_are_ored_together() {
+        let gz = build_test_tar_gz(&[
+            ("repo-main/taxonomy/signer.md", "sig"),
+            ("repo-main/reports/patterns.md", "pat"),
+            ("repo-main/README.md", "readme"),
+        ]);
+        let out = extract_archive(
+            &gz,
+            &["md"],
+            &["taxonomy/".to_string(), "reports/patterns.md".to_string()],
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2, "{out:?}");
+    }
+
+    #[test]
+    fn an_include_path_matching_nothing_is_an_error_not_an_empty_corpus() {
+        // A typo'd prefix would otherwise cache an empty file and leave
+        // every later command succeeding while retrieving nothing.
+        let gz = build_test_tar_gz(&[("repo-main/content/rules/SOL-001.md", "rule")]);
+        let err = extract_archive(&gz, &["md"], &["contnet/rules/".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("include_paths"),
+            "the error must name the filter: {err}"
+        );
+    }
+
+    #[test]
+    fn an_empty_archive_without_a_filter_is_still_not_an_error() {
+        // Only a filter that matched nothing is a defect; an archive with
+        // no files of interest and no filter stays a soft outcome, which is
+        // what the per-entry tolerance elsewhere in this module assumes.
+        let gz = build_test_tar_gz(&[("repo-main/logo.png", "not text")]);
+        assert!(extract_archive(&gz, &["md"], &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn include_paths_still_cannot_smuggle_a_traversal_entry() {
+        // The filter runs after the traversal guard, and must not become a
+        // way around it.
+        let gz = build_test_tar_gz_raw(&[(
+            "repo-main/../../etc/passwd.md",
+            b"root:x:0:0".to_vec(),
+        )]);
+        let err = extract_archive(&gz, &["md"], &["../".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("include_paths"), "{err}");
+    }
+
+    #[test]
     fn extract_archive_is_deterministically_ordered() {
         let gz = build_test_tar_gz(&[("repo/z.rs", "z"), ("repo/a.rs", "a")]);
-        let out = extract_archive(&gz, &["rs"]).unwrap();
+        let out = extract_archive(&gz, &["rs"], &[]).unwrap();
         assert_eq!(out[0].0, "repo/a.rs", "entries sort by path");
     }
 
@@ -637,7 +776,7 @@ mod tests {
             ("repo/good.rs", b"fn main() {}".to_vec()),
             ("repo/bad.rs", vec![0xff, 0xfe, 0xff]),
         ]);
-        let out = extract_archive(&gz, &["rs"]).unwrap();
+        let out = extract_archive(&gz, &["rs"], &[]).unwrap();
         assert_eq!(out.len(), 1, "partial results beat no results");
         assert_eq!(out[0].0, "repo/good.rs");
     }
@@ -645,7 +784,7 @@ mod tests {
     #[test]
     fn extract_archive_rejects_path_traversal_entries() {
         let gz = build_test_tar_gz(&[("../../etc/evil.rs", "pwn"), ("repo/ok.rs", "ok")]);
-        let out = extract_archive(&gz, &["rs"]).unwrap();
+        let out = extract_archive(&gz, &["rs"], &[]).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "repo/ok.rs");
     }

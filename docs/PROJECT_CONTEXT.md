@@ -57,7 +57,7 @@ clean code.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phases 6–8** — Track 2 LLM, mutation engine, differential eval harness. Not started.
 
-258 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+268 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -67,7 +67,8 @@ clean code.
 .
 ├── .superpowers/              SDD agent scaffolding — GITIGNORED, not project history
 ├── corpus/
-│   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class tags
+│   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class
+│   │                           tags, optional include_paths, and the refresh rule
 │   ├── notes/                 Our own derived notes — COMMITTED (original work)
 │   └── cache/                 Fetched source text — GITIGNORED (see Licensing below)
 ├── crates/
@@ -231,6 +232,20 @@ real constraint. Ordinary choices need no justification.
   sparse-only run is exactly what an operator needs to see when the embedder
   is down.
 
+- **Archive sources carry an optional `include_paths` filter, matched under
+  the archive's top-level directory.** A codeload tarball names every entry
+  `<repo>-<ref>/…`, but a filter is naturally written against the repository
+  layout (`content/rules/`), so the top-level component is stripped before
+  matching. Comparing raw paths would match nothing and fail *silently* — an
+  empty corpus, not an error — which is why a filter that matches nothing is
+  an explicit error and has its own test.
+
+- **`FetchOutcome::Changed` carries sizes as well as hashes.** Two of the
+  corpus sources are living repositories, so "this changed" is the expected
+  outcome and says nothing on its own. The byte delta is what separates "the
+  maintainers added findings" from "the fetch captured a login page", and only
+  the second needs a human.
+
 - **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
   component legs (dense cosine ≥ 0.35, or any non-zero BM25 score). An RRF score
   is rank-derived, so its magnitude says nothing about relevance: the top
@@ -297,7 +312,8 @@ notes and *is* committed.
 | Change the report | `crates/dike-core/src/report/` |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
 | Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
-| Add a corpus source | `corpus/sources.toml` |
+| Add a corpus source | `corpus/sources.toml` — set `include_paths` for any repository whose Markdown is mostly not corpus material |
+| Know when to re-fetch the corpus | The refresh rule at the top of `corpus/sources.toml` |
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |
 | Change how vectors are stored or scored | `crates/dike-core/src/retrieval/store.rs` (the `VectorStore` interface hides the sqlite choice) |
 | Change how the two retrieval legs are combined | `crates/dike-core/src/retrieval/rrf.rs` (fusion + the grounding gate) and `retriever.rs` (the legs) |

@@ -1,3 +1,36 @@
+# Corpus manifest. `dike corpus fetch` reads this; `corpus/cache/` (the
+# fetched text) is gitignored and never committed.
+#
+# ---- Refresh rule (living sources) ----------------------------------------
+#
+# Two of these sources are repositories that gain new findings over time
+# (solana-security-standard, solana-audit-taxonomy), and three are live web
+# pages. A source that changed between fetches is therefore the normal case,
+# not an alarm — but it must be an *observed* case, not an unnoticed one:
+#
+#   1. Re-fetch before any evaluation run, and otherwise monthly:
+#          dike corpus fetch
+#      Each source reports `unchanged`, `CHANGED ... grew N bytes`, or
+#      `CHANGED ... SHRANK N bytes`. Growth is what new findings look like.
+#      A shrink usually means the fetch captured an error or login page —
+#      investigate before accepting it.
+#   2. Accept the new content deliberately:
+#          dike corpus fetch --update-hashes
+#      This rewrites `sha256` and `retrieved` here, so the diff of this file
+#      is the record of what changed and when.
+#   3. Re-index, because the corpus hash has moved:
+#          dike corpus index --rebuild
+#      `--rebuild` matters here: a source that *removed* a document would
+#      otherwise leave its vector in the store.
+#   4. In CI, `dike corpus fetch --verify` exits non-zero on any drift, which
+#      is how a run pinned to a recorded corpus proves it really used it.
+#
+# Determinism note: the corpus hash is part of a report's metadata. Two runs
+# are only comparable if their corpus hashes match, so re-fetching mid-eval
+# invalidates the comparison — do it between runs, never during one.
+#
+# ---------------------------------------------------------------------------
+
 [[source]]
 id = "sealevel-attacks"
 kind = "archive"
@@ -38,6 +71,41 @@ retrieved = "2026-08-28"
 sha256 = ""
 class_tags = []
 
+[[source]]
+id = "solana-security-standard"
+kind = "archive"
+url = "https://codeload.github.com/Copenhagen0x/solana-security-standard/tar.gz/refs/heads/main"
+title = "Solana Security Standard — SOL-0XX bug-class rules"
+license = "MIT"
+retrieved = "2026-08-31"
+sha256 = ""
+class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap", "unchecked-arithmetic"]
+# Without this filter the repo's 26 KB README, 43 KB CHANGELOG, issue
+# templates and CLI docs would be indexed alongside the 52 rule files.
+# Paths are relative to the archive's top-level directory.
+include_paths = ["content/rules/"]
+
+[[source]]
+id = "solana-audit-taxonomy"
+kind = "archive"
+url = "https://codeload.github.com/beriktassuly/solana-audit-skill/tar.gz/refs/heads/main"
+title = "Solana audit taxonomy — one reference per vulnerability class"
+license = "MIT"
+retrieved = "2026-08-31"
+sha256 = ""
+class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap", "unchecked-arithmetic"]
+# The taxonomy files carry `##` headings every few lines, which is what the
+# chunker keys on. `public-audit-corpus.md` is deliberately NOT included:
+# it is a 30-row Markdown table with no per-row heading or finding ID, so
+# the whole table would land in one chunk and a citation would point at
+# "the table" rather than at a finding.
+include_paths = [
+  "skill/references/taxonomy/",
+  "skill/references/reports/cross-report-patterns.md",
+  "skill/references/reports/notable-incidents.md",
+  "skill/references/common-false-positives.md",
+]
+
 # ---------------------------------------------------------------------------
 # Audit-report sources — still commented out, but for a NEW reason (2026-08-31).
 #
@@ -59,8 +127,12 @@ class_tags = []
 #
 # Enabling these therefore needs a PDF text-extraction step — a new
 # `SourceKind`, a new dependency, and an entry in PROJECT_CONTEXT.md — not a
-# URL swap. That is a task of its own, not a line in this file. Until it
-# exists, `load_manifest` returns 4 sources and a test asserts that count.
+# URL swap. That is a task of its own, not a line in this file.
+#
+# It may also never be worth doing: the two MIT-licensed Markdown sources
+# added above (solana-security-standard, solana-audit-taxonomy) cover the
+# same vulnerability classes in a form the chunker handles natively, and
+# they are redistributable, which the PDF reports are not.
 #
 # [[source]]
 # id = "ottersec-audit-reports"

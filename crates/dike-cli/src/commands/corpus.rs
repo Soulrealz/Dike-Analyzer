@@ -62,10 +62,11 @@ pub fn fetch(update_hashes: bool, verify: bool) -> anyhow::Result<()> {
                 println!("unchanged {}", source.id);
                 unchanged += 1;
             }
-            FetchOutcome::Changed { old, new } => {
+            FetchOutcome::Changed { old, new, old_bytes, new_bytes } => {
                 println!(
-                    "CHANGED   {} (recorded {old}, fetched {new})",
-                    source.id
+                    "CHANGED   {} (recorded {old}, fetched {new}, {})",
+                    source.id,
+                    describe_size_change(old_bytes, new_bytes)
                 );
                 changed += 1;
                 new_hashes.insert(source.id.clone(), new);
@@ -90,6 +91,25 @@ pub fn fetch(update_hashes: bool, verify: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Describe a cached source's size change in words.
+///
+/// A living corpus repository is *expected* to change between fetches —
+/// that is the point of re-fetching. What needs a human is the change that
+/// went the wrong way: a source that lost most of its text usually means
+/// the fetch captured an error page, not that the maintainers deleted their
+/// findings.
+fn describe_size_change(old_bytes: usize, new_bytes: usize) -> String {
+    match old_bytes {
+        0 => format!("{new_bytes} bytes, nothing cached before"),
+        old if new_bytes > old => format!("grew {} bytes", new_bytes - old),
+        old if new_bytes == old => "same size, different content".to_string(),
+        old => format!(
+            "SHRANK {} bytes — check the fetch before accepting it",
+            old - new_bytes
+        ),
+    }
 }
 
 /// Load the cached corpus named by the manifest.
@@ -527,6 +547,44 @@ mod tests {
         // is a different claim from "the dense leg did not run".
         assert_eq!(render_score(None), "-");
         assert_eq!(render_score(Some(0.0)), "0.0000");
+    }
+
+    /// The repo's real manifest. Lives in this crate, not in `dike-core`:
+    /// asserting on a source *by name* means naming Solana-specific
+    /// vocabulary, which `dike-core/tests/seam.rs` rejects in string
+    /// literals as well as identifiers. The CLI is where the two worlds
+    /// meet, so this is the right side of the seam for it.
+    fn real_manifest() -> Vec<dike_core::retrieval::Source> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(MANIFEST_PATH);
+        load_manifest(&path).unwrap()
+    }
+
+    #[test]
+    fn the_large_repository_sources_are_path_filtered() {
+        // Both were added specifically because they are big general-purpose
+        // repositories whose Markdown is mostly not corpus material: an
+        // unfiltered entry would quietly pull in READMEs and changelogs,
+        // and every other manifest test would still pass.
+        for id in ["solana-security-standard", "solana-audit-taxonomy"] {
+            let s = real_manifest()
+                .into_iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} missing from the manifest"));
+            assert!(!s.include_paths.is_empty(), "{id} must be path-filtered");
+        }
+    }
+
+    #[test]
+    fn a_size_drop_between_fetches_is_called_out_and_growth_is_not() {
+        // A living corpus repository is expected to grow between fetches.
+        // The change that needs a human is the one that went backwards.
+        assert!(describe_size_change(1000, 1200).contains("grew"));
+        assert!(describe_size_change(1000, 400).contains("SHRANK"));
+        assert!(describe_size_change(0, 400).contains("nothing cached before"));
+        assert!(describe_size_change(1000, 1000).contains("same size"));
     }
 
     #[test]
