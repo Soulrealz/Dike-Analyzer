@@ -54,10 +54,10 @@ clean code.
 - **Phase 2** — Anchor IR and parser (`syn`-based), `dike ir` debug command.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
-- **Phase 5** — corpus document model, manifest, chunking, hashing (done); HTTP layer and `dike corpus fetch` (done); BM25 sparse index (done); embedder + vector store (done); RRF fusion and `dike corpus index|query` (next).
+- **Phase 5** — corpus document model, manifest, chunking, hashing (done); HTTP layer and `dike corpus fetch` (done); BM25 sparse index (done); embedder + vector store (done); RRF fusion and the `Retrieve` seam (done); `dike corpus index|query` CLI wiring (next — gated on the first live Ollama run).
 - **Phases 6–8** — Track 2 LLM, mutation engine, differential eval harness. Not started.
 
-227 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+248 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -79,7 +79,8 @@ clean code.
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
-│   │   │                       BM25 sparse index, dense embedder, sqlite vector store
+│   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
+│   │   │                       RRF fusion, the Retrieve seam + HybridRetriever
 │   │   └── tests/seam.rs      ARCHITECTURAL GATE — fails the build on Solana vocabulary
 │   ├── dike-lang-anchor/      Solana/Anchor-specific. Everything domain lives here.
 │   │   ├── src/
@@ -175,6 +176,7 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 8 | Fetched corpus content is never committed | `.gitignore`, and the licensing note below |
 | 9 | A finding never points at line 0 | `attr_line`-with-fallback in constraint detectors |
 | 10 | A vector search across a model/dimension mismatch refuses rather than scoring | `StoreError::ModelMismatch`; the store's `meta` table records `(model, dim)` |
+| 11 | An unavailable embedder degrades retrieval to sparse-only; it never empties it | `HybridRetriever::dense_leg` returns `None` on `HttpError`, and two tests cover the build-time and query-time paths separately |
 
 ---
 
@@ -217,6 +219,18 @@ real constraint. Ordinary choices need no justification.
   scan, not `sqlite-vec`.** A documented deviation from the design doc. All three
   of its stated requirements hold (one file, no server, reproducible from the
   fetch script), and at v1 corpus size a linear scan is sub-millisecond.
+
+- **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
+  component legs (dense cosine ≥ 0.35, or any non-zero BM25 score). An RRF score
+  is rank-derived, so its magnitude says nothing about relevance: the top
+  document of a garbage list scores `1/61`, exactly what a perfect match scores.
+
+- **A dead embedder degrades; a model mismatch does not.** `HybridRetriever`
+  treats an unreachable embedder as an availability problem and retrieves with
+  BM25 alone — retrieval that returned nothing would make Track 2 look like a
+  recall failure, and the eval harness would record it as one. A
+  `ModelMismatch`, by contrast, propagates: a stale index that answers
+  confidently is worse than an error.
 
 - **`dike corpus fetch --update-hashes` rewrites `sources.toml` by targeted text
   surgery**, not a TOML round-trip. A round-trip would destroy the commented-out
@@ -274,4 +288,6 @@ notes and *is* committed.
 | Add a corpus source | `corpus/sources.toml` |
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |
 | Change how vectors are stored or scored | `crates/dike-core/src/retrieval/store.rs` (the `VectorStore` interface hides the sqlite choice) |
+| Change how the two retrieval legs are combined | `crates/dike-core/src/retrieval/rrf.rs` (fusion + the grounding gate) and `retriever.rs` (the legs) |
+| Give Track 2 a stub corpus in a test | Implement `Retrieve` — Track 2 holds a `Box<dyn Retrieve>`, never a concrete retriever |
 | Understand why `dike-core` rejects a word | `crates/dike-core/tests/seam.rs` |

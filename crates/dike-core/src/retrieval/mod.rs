@@ -9,10 +9,14 @@ pub mod bm25;
 pub mod dense;
 pub mod document;
 pub mod fetch;
+pub mod retriever;
+pub mod rrf;
 pub mod store;
 
 pub use bm25::Bm25Index;
 pub use dense::{Embedder, OllamaEmbedder};
 pub use document::{chunk_by_finding, corpus_hash, load_manifest, Document, Source, SourceKind};
 pub use fetch::{extract_archive, fetch_source, html_to_text, load_cached, FetchOutcome};
+pub use retriever::{HybridRetriever, Retrieve};
+pub use rrf::{is_grounded, rrf, RetrievalHit, DENSE_GROUNDING_THRESHOLD, RRF_K};
 pub use store::{StoreError, VectorStore};
