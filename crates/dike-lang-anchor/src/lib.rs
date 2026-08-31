@@ -1,3 +1,4 @@
+pub mod chunker;
 pub mod detectors;
 pub mod ir;
 pub mod parser;
