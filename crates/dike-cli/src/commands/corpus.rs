@@ -31,8 +31,15 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// `OllamaEmbedder` takes host and model as parameters (D26), and this is
 /// the one place a default lives.
 pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
-/// Default embedding model.
-pub const DEFAULT_EMBED_MODEL: &str = "bge-small-en-v1.5";
+/// Default embedding model: BGE-small-en v1.5, the model the user chose.
+///
+/// The bare name `bge-small-en-v1.5` is NOT resolvable — it is a Hugging
+/// Face model with no entry in Ollama's own library, so `ollama pull
+/// bge-small-en-v1.5` fails with "file does not exist". The `hf.co/...`
+/// form is how Ollama pulls it, and it is the string the vector store
+/// records as the index's model, so it must match exactly or a later query
+/// is refused as a mismatch.
+pub const DEFAULT_EMBED_MODEL: &str = "hf.co/CompendiumLabs/bge-small-en-v1.5-gguf";
 
 /// Run `dike corpus fetch [--update-hashes] [--verify]`.
 pub fn fetch(update_hashes: bool, verify: bool) -> anyhow::Result<()> {
@@ -442,6 +449,11 @@ mod tests {
 
     #[test]
     fn query_at_renders_a_score_line_per_hit_and_a_grounded_line() {
+        // Renders shape, not verdict: whether a stub embedder's cosines
+        // clear DENSE_GROUNDING_THRESHOLD is a property of the stub, and
+        // asserting `grounded: true` here would make a recalibration of the
+        // real threshold fail a rendering test. The gate itself is covered
+        // in `retrieval::rrf`.
         let (_d, manifest, cache, index) = corpus_fixture(&[
             ("alpha", "# Missing owner validation\nThe handler never checks the owner."),
             ("beta", "# Unchecked arithmetic\nThe balance wraps on overflow."),
@@ -452,7 +464,11 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.len() >= 2, "{out}");
         assert!(lines[0].contains("dense=") && lines[0].contains("bm25="), "{out}");
-        assert_eq!(lines.last().copied().unwrap(), "grounded: true", "{out}");
+        let last = lines.last().copied().unwrap();
+        assert!(
+            last == "grounded: true" || last == "grounded: false",
+            "the last line must be the grounding verdict, got: {out}"
+        );
     }
 
     #[test]
@@ -589,7 +605,13 @@ mod tests {
 
     #[test]
     fn the_defaults_are_the_documented_ones() {
-        assert_eq!(DEFAULT_EMBED_MODEL, "bge-small-en-v1.5");
+        // Not the bare `bge-small-en-v1.5`: that name does not resolve on
+        // Ollama, and a default that cannot be pulled makes `dike corpus
+        // index` fail out of the box.
+        assert_eq!(
+            DEFAULT_EMBED_MODEL,
+            "hf.co/CompendiumLabs/bge-small-en-v1.5-gguf"
+        );
         assert_eq!(DEFAULT_OLLAMA_HOST, "http://localhost:11434");
     }
 

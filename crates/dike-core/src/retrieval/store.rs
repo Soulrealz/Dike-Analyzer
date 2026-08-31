@@ -131,16 +131,7 @@ impl VectorStore {
     ///
     /// Ties break on `doc_id` so the ordering is deterministic (Rule 5).
     pub fn search(&self, q: &[f32], k: usize) -> Result<Vec<(String, f32)>, StoreError> {
-        if let Some((model, dim)) = self.meta()? {
-            if dim != q.len() {
-                return Err(StoreError::ModelMismatch {
-                    built_with: model.clone(),
-                    built_dim: dim,
-                    got: model,
-                    got_dim: q.len(),
-                });
-            }
-        }
+        self.check_dimension(q)?;
         let mut stmt = self
             .conn
             .prepare("SELECT doc_id, vec FROM vectors")
@@ -163,6 +154,54 @@ impl VectorStore {
         });
         scored.truncate(k);
         Ok(scored)
+    }
+
+    /// Cosine scores for specific `doc_id`s, for ids the store actually has.
+    ///
+    /// [`Self::search`] only reports its own top `k`, so a document that
+    /// reached the final result through the sparse leg would otherwise carry
+    /// no dense score at all — indistinguishable from a run where the dense
+    /// leg never happened. That ambiguity is not cosmetic: the grounding gate
+    /// reads it.
+    pub fn scores_for(&self, q: &[f32], ids: &[String]) -> Result<Vec<(String, f32)>, StoreError> {
+        self.check_dimension(q)?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT vec FROM vectors WHERE doc_id = ?1")
+            .map_err(sql)?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let blob: Option<Vec<u8>> = stmt
+                .query_row([id], |r| r.get::<_, Vec<u8>>(0))
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(sql(other)),
+                })?;
+            if let Some(blob) = blob {
+                out.push((id.clone(), cosine(q, &decode(&blob))));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Refuse a query whose width disagrees with what the index was built
+    /// with. Shared by `search` and `scores_for` so the two can never drift.
+    fn check_dimension(&self, q: &[f32]) -> Result<(), StoreError> {
+        if let Some((model, dim)) = self.meta()? {
+            if dim != q.len() {
+                return Err(StoreError::ModelMismatch {
+                    built_with: model.clone(),
+                    built_dim: dim,
+                    got: model,
+                    got_dim: q.len(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// How many vectors the store holds.
@@ -355,6 +394,53 @@ mod tests {
             .map(|h| h.0)
             .collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn scores_for_returns_a_score_per_known_id_and_skips_unknown_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        store.init("m", 2).unwrap();
+        store
+            .upsert(&[("a".into(), vec![1.0, 0.0]), ("b".into(), vec![0.0, 1.0])])
+            .unwrap();
+        let out = store
+            .scores_for(&[1.0, 0.0], &["a".to_string(), "gone".to_string()])
+            .unwrap();
+        assert_eq!(out.len(), 1, "an id the store does not have is skipped");
+        assert_eq!(out[0].0, "a");
+        assert!((out[0].1 - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn scores_for_agrees_with_search_on_the_same_vectors() {
+        // Two ways of computing the same cosine must not drift apart.
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        store.init("m", 2).unwrap();
+        store
+            .upsert(&[("a".into(), vec![1.0, 0.5]), ("b".into(), vec![0.2, 1.0])])
+            .unwrap();
+        let q = [0.9, 0.1];
+        let searched = store.search(&q, 5).unwrap();
+        let scored = store
+            .scores_for(&q, &["a".to_string(), "b".to_string()])
+            .unwrap();
+        for (id, s) in scored {
+            let expected = searched.iter().find(|h| h.0 == id).unwrap().1;
+            assert!((s - expected).abs() < 1e-6, "{id}: {s} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn scores_for_refuses_a_dimension_mismatch_exactly_as_search_does() {
+        // The two entry points share `check_dimension` precisely so a stale
+        // index cannot be scored through the back door.
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        store.init("embed-model-v1", 384).unwrap();
+        let err = store.scores_for(&[1.0, 0.0], &["a".to_string()]).unwrap_err();
+        assert!(matches!(err, StoreError::ModelMismatch { .. }), "got: {err:?}");
     }
 
     #[test]

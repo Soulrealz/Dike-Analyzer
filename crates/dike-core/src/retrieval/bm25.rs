@@ -239,7 +239,27 @@ impl Bm25Index {
             .parse_query(&quoted)
             .with_context(|| "parsing BM25 query")?;
 
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(k))?;
+        // Collect every match, not the top `k`, and truncate after the
+        // deterministic sort below.
+        //
+        // This is not an optimisation to undo. `TopDocs::with_limit(k)`
+        // chooses *which* of several equally-scoring documents survive, and
+        // it makes that choice by internal document address — which depends
+        // on how tantivy's multi-threaded writer laid out segments during
+        // the build, and therefore differs between two builds of the same
+        // corpus. Sorting afterwards cannot recover a document the limit
+        // already discarded, so the truncation itself has to happen after
+        // the sort. Measured on the real 358-document corpus: 21 documents
+        // tied on one query and the surviving set changed between builds,
+        // which changed the fused ranking and the citations (Rule 5,
+        // invariant 5).
+        //
+        // The cost is bounded by corpus size, which is hundreds of
+        // documents at v1. If the corpus ever grows to where collecting
+        // every match is too expensive, the fix is a collector that breaks
+        // ties on the id field — not a return to an unstable limit.
+        let limit = (searcher.num_docs() as usize).max(1);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
 
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
@@ -264,6 +284,7 @@ impl Bm25Index {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.0.cmp(&b.0))
         });
+        hits.truncate(k);
         Ok(hits)
     }
 }
@@ -466,6 +487,30 @@ mod tests {
     /// separate builds, so an unsorted tie order is unstable build-to-build
     /// even when it is stable within one built index. `search` must sort
     /// explicitly so output is a deterministic function of (score, id).
+    #[test]
+    fn rebuilding_the_index_returns_the_same_tied_documents() {
+        // The sibling test below searches ONE index twice, which cannot
+        // catch this: the nondeterminism is in the *build*. tantivy's
+        // multi-threaded writer lays out segments differently between
+        // builds, and `TopDocs::with_limit` then picks different members of
+        // a tied group. Found as a flaky test on 2026-08-31; before the fix
+        // this failed roughly one run in three.
+        let mut docs: Vec<Document> = (0..20)
+            .map(|i| doc(&format!("d{i}"), "gamma delta gamma delta gamma delta"))
+            .collect();
+        docs.push(doc("rare", "zzzrareterm and some padding words"));
+
+        let mut runs: Vec<Vec<(String, f32)>> = Vec::new();
+        for _ in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let index = Bm25Index::build(&docs, dir.path()).unwrap();
+            runs.push(index.search("zzzrareterm gamma delta", 8).unwrap());
+        }
+        for (i, run) in runs.iter().enumerate() {
+            assert_eq!(run, &runs[0], "build {i} returned a different tied set");
+        }
+    }
+
     #[test]
     fn search_order_is_deterministic_across_tied_scores() {
         let docs: Vec<_> = (0..8)

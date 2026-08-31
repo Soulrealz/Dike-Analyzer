@@ -8,8 +8,38 @@
 //! **The grounding gate (D11) never thresholds the fused score.** An RRF score
 //! is rank-derived, so its magnitude carries no relevance information: the
 //! first document in a list of garbage scores `1/61`, exactly what a perfect
-//! match scores. Grounding therefore asks the component legs — a dense cosine
-//! at or above [`DENSE_GROUNDING_THRESHOLD`], or any non-zero BM25 score.
+//! match scores. Grounding therefore asks the component legs.
+//!
+//! **Which leg it asks was recalibrated against the real corpus on
+//! 2026-08-31**, and the original spec rule ("dense >= 0.35 OR any non-zero
+//! BM25") turned out to accept everything. Measured over 358 documents with
+//! BGE-small-en v1.5, best score per query:
+//!
+//! | | dense | BM25 |
+//! |---|---|---|
+//! | 6 off-topic queries | 0.417 – **0.566** | 2.6 – **16.0** |
+//! | 9 on-topic queries | **0.664** – 0.816 | **2.6** – 22.5 |
+//!
+//! Two conclusions, both load-bearing:
+//!
+//! - **Dense separates cleanly, but not at 0.35.** These embeddings sit on a
+//!   compressed cosine scale where unrelated text scores ~0.5, so the spec's
+//!   threshold was below the floor of the distribution and could never
+//!   discriminate. [`DENSE_GROUNDING_THRESHOLD`] is now 0.62, which clears
+//!   the off-topic maximum by 0.054 and sits 0.044 under the on-topic
+//!   minimum. That minimum is an identifier query (`try_borrow_mut_data`),
+//!   which is the case dense retrieval handles worst — hence the deliberately
+//!   asymmetric margins.
+//! - **BM25 cannot stand alone as evidence.** Its ranges overlap almost
+//!   completely: an off-topic query reached 16.0 while a genuinely relevant
+//!   exact-identifier query scored 2.6. No threshold separates them, so BM25
+//!   grounds only when the dense leg did not run at all — a degraded,
+//!   sparse-only run, where weaker evidence is accepted deliberately rather
+//!   than reporting a corpus hit as no evidence.
+//!
+//! These are pinned constants (Rule 5): re-tuning one silently invalidates
+//! every eval comparison across time. Recalibrating for a different embedding
+//! model means re-running the measurement above, not nudging the number.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -20,7 +50,11 @@ use crate::retrieval::document::Document;
 pub const RRF_K: f32 = 60.0;
 
 /// A dense cosine at or above this counts as evidence for grounding (D11).
-pub const DENSE_GROUNDING_THRESHOLD: f32 = 0.35;
+///
+/// Calibrated against the real corpus with BGE-small-en v1.5 — see the module
+/// docs for the measurement and why 0.35 (the spec's value) accepted
+/// everything. Model-specific: changing the embedding model invalidates it.
+pub const DENSE_GROUNDING_THRESHOLD: f32 = 0.62;
 
 /// One retrieved document with its fused score and whichever component scores
 /// it earned. `None` means the leg did not return this document — or, for
@@ -57,15 +91,27 @@ pub fn rrf(ranked_lists: &[Vec<String>], k: f32) -> Vec<(String, f32)> {
 
 /// Is there real retrieval evidence behind these hits?
 ///
-/// True iff any hit carries a dense cosine at or above
-/// [`DENSE_GROUNDING_THRESHOLD`], or any hit carries a BM25 score above zero.
+/// When the dense leg ran, grounding is a dense question only: any hit at or
+/// above [`DENSE_GROUNDING_THRESHOLD`]. A strong BM25 score does *not* rescue
+/// a query the embeddings rejected, because BM25 scores an off-topic query as
+/// highly as a relevant one (module docs).
+///
+/// When the dense leg did not run — the embedder was unavailable, so every
+/// hit came from BM25 alone — any non-zero BM25 score grounds. That is
+/// deliberately weaker evidence: the alternative is reporting a degraded run
+/// as ungrounded, which would blame the corpus for an availability failure
+/// (invariant 11). A caller that needs to tell the two apart has the
+/// per-hit `dense_score`.
+///
 /// Deliberately *not* a function of `rrf_score` — see the module docs.
 pub fn is_grounded(hits: &[RetrievalHit]) -> bool {
-    hits.iter().any(|h| {
-        h.dense_score
-            .is_some_and(|s| s >= DENSE_GROUNDING_THRESHOLD)
-            || h.bm25_score.is_some_and(|s| s > 0.0)
-    })
+    let dense_leg_ran = hits.iter().any(|h| h.dense_score.is_some());
+    if dense_leg_ran {
+        hits.iter()
+            .any(|h| h.dense_score.is_some_and(|s| s >= DENSE_GROUNDING_THRESHOLD))
+    } else {
+        hits.iter().any(|h| h.bm25_score.is_some_and(|s| s > 0.0))
+    }
 }
 
 #[cfg(test)]
@@ -165,13 +211,76 @@ mod tests {
             !is_grounded(&[hit("a", 0.9, Some(0.10), None)]),
             "a high RRF score alone is not evidence"
         );
-        assert!(is_grounded(&[hit("a", 0.01, Some(0.40), None)]));
-        assert!(is_grounded(&[hit("a", 0.01, None, Some(2.5))]));
+        assert!(is_grounded(&[hit("a", 0.01, Some(0.70), None)]));
+        assert!(
+            is_grounded(&[hit("a", 0.01, None, Some(2.5))]),
+            "sparse-only: BM25 is the only evidence there can be"
+        );
         assert!(
             !is_grounded(&[hit("a", 0.99, None, Some(0.0))]),
             "a zero BM25 score is no signal"
         );
         assert!(!is_grounded(&[]));
+    }
+
+    #[test]
+    fn a_strong_bm25_does_not_rescue_a_query_the_embeddings_rejected() {
+        // The calibration finding of 2026-08-31: an off-topic query scored
+        // BM25 16.0 while a genuinely relevant identifier query scored 2.6,
+        // so BM25 carries no standalone evidence when the dense leg ran.
+        // Under the previous "dense >= 0.35 OR any non-zero BM25" rule this
+        // was grounded, and so was every nonsense query.
+        let hits = vec![hit("a", 0.03, Some(0.52), Some(16.0))];
+        assert!(!is_grounded(&hits), "off-topic dense with a loud BM25");
+    }
+
+    #[test]
+    fn a_sparse_only_run_still_grounds_on_bm25_alone() {
+        // Invariant 11: an unavailable embedder is an availability failure,
+        // not a corpus failure. Reporting it as ungrounded would blame the
+        // corpus. Every hit lacking a dense score is what "the dense leg
+        // did not run" looks like.
+        let hits = vec![hit("a", 0.03, None, Some(2.6)), hit("b", 0.02, None, Some(1.1))];
+        assert!(is_grounded(&hits));
+    }
+
+    #[test]
+    fn one_hit_missing_from_the_dense_leg_does_not_make_the_run_sparse_only() {
+        // A hit BM25 returned and the dense leg did not still has
+        // `dense_score: None`, but the dense leg *did* run — so the strict
+        // dense rule must stay in force. Reading "any hit has no dense
+        // score" as "sparse-only" would silently restore the old
+        // everything-is-grounded behaviour whenever the legs disagree.
+        let hits = vec![
+            hit("a", 0.03, Some(0.52), Some(1.0)),
+            hit("b", 0.02, None, Some(16.0)),
+        ];
+        assert!(!is_grounded(&hits));
+    }
+
+    #[test]
+    fn the_dense_threshold_sits_inside_the_measured_envelope() {
+        // Pins the calibration itself, not just the code that reads it.
+        // These two numbers are the measurement recorded in the module
+        // docs: the highest dense score any off-topic query achieved, and
+        // the lowest any on-topic query achieved, over the real 358-document
+        // corpus with BGE-small-en v1.5. A retune that leaves this envelope
+        // is a decision that needs re-measuring, not a nudge.
+        // `black_box` keeps these comparisons out of clippy's
+        // constant-assertion lint: both sides really are constants, which
+        // is the point — the test pins the relationship between the tuned
+        // threshold and the measurement it was tuned against.
+        let threshold = std::hint::black_box(DENSE_GROUNDING_THRESHOLD);
+        let measured_off_topic_max = std::hint::black_box(0.5660_f32);
+        let measured_on_topic_min = std::hint::black_box(0.6636_f32);
+        assert!(
+            threshold > measured_off_topic_max,
+            "the threshold would accept off-topic retrieval"
+        );
+        assert!(
+            threshold < measured_on_topic_min,
+            "the threshold would reject a real identifier query"
+        );
     }
 
     #[test]

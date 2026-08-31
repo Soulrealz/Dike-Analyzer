@@ -124,9 +124,17 @@ impl HybridRetriever {
 
     /// The dense leg: `None` when it could not run at all.
     ///
+    /// Returns the query vector alongside the hits, because the caller needs
+    /// it again to score documents the sparse leg contributed.
+    ///
     /// A [`StoreError::ModelMismatch`] is returned as an error rather than
     /// swallowed — see the module docs.
-    fn dense_leg(&self, query: &str, k: usize) -> anyhow::Result<Option<Vec<(String, f32)>>> {
+    #[allow(clippy::type_complexity)]
+    fn dense_leg(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> anyhow::Result<Option<(Vec<f32>, Vec<(String, f32)>)>> {
         if self.store.meta()?.is_none() {
             // No vectors were ever indexed (a sparse-only build).
             return Ok(None);
@@ -143,7 +151,7 @@ impl HybridRetriever {
             return Ok(None);
         };
         match self.store.search(&vector, k) {
-            Ok(hits) => Ok(Some(hits)),
+            Ok(hits) => Ok(Some((vector, hits))),
             Err(e @ StoreError::ModelMismatch { .. }) => Err(e.into()),
             Err(e) => Err(e.into()),
         }
@@ -206,21 +214,42 @@ impl Retrieve for HybridRetriever {
         let sparse = self.bm25.search(query, wide)?;
 
         let mut lists: Vec<Vec<String>> = Vec::new();
-        if let Some(d) = &dense {
+        if let Some((_, d)) = &dense {
             lists.push(d.iter().map(|(id, _)| id.clone()).collect());
         }
         lists.push(sparse.iter().map(|(id, _)| id.clone()).collect());
 
-        let dense_scores: BTreeMap<&str, f32> = dense
+        let mut dense_scores: BTreeMap<String, f32> = dense
             .iter()
-            .flatten()
-            .map(|(id, s)| (id.as_str(), *s))
+            .flat_map(|(_, hits)| hits.iter())
+            .map(|(id, s)| (id.clone(), *s))
             .collect();
         let sparse_scores: BTreeMap<&str, f32> =
             sparse.iter().map(|(id, s)| (id.as_str(), *s)).collect();
 
+        let fused = rrf(&lists, RRF_K);
+
+        // Score the documents the sparse leg contributed. Without this a
+        // `None` dense score means either "this document was outside the
+        // dense leg's top-k" or "the dense leg never ran", and the grounding
+        // gate cannot tell those apart: a result page made only of
+        // sparse-leg documents would read as a degraded run and ground on
+        // BM25 alone, which is exactly the permissiveness the 2026-08-31
+        // recalibration removed.
+        if let Some((vector, _)) = &dense {
+            let missing: Vec<String> = fused
+                .iter()
+                .take(top_k.saturating_mul(2))
+                .map(|(id, _)| id.clone())
+                .filter(|id| !dense_scores.contains_key(id))
+                .collect();
+            for (id, score) in self.store.scores_for(vector, &missing)? {
+                dense_scores.insert(id, score);
+            }
+        }
+
         let mut hits = Vec::new();
-        for (id, score) in rrf(&lists, RRF_K) {
+        for (id, score) in fused {
             // A fused id with no document behind it means the index and the
             // corpus have drifted apart; skip it rather than inventing text.
             let Some(document) = self.docs.get(&id) else {
@@ -230,7 +259,7 @@ impl Retrieve for HybridRetriever {
             hits.push(RetrievalHit {
                 document: document.clone(),
                 rrf_score: score,
-                dense_score: dense_scores.get(id.as_str()).copied(),
+                dense_score: dense_scores.get(&id).copied(),
                 bm25_score: sparse_scores.get(id.as_str()).copied(),
             });
             if hits.len() == top_k {
@@ -381,6 +410,74 @@ mod tests {
             err.to_string().contains("re-index"),
             "the error must tell the user what to do: {err}"
         );
+    }
+
+    #[test]
+    fn a_sparse_leg_hit_still_carries_its_real_dense_score() {
+        // The bug this pins, found on the live corpus: a hit that reached
+        // the result through BM25 alone had `dense_score: None`, which is
+        // also what "the dense leg never ran" looks like. The grounding gate
+        // reads that distinction, so an off-topic query whose top hits were
+        // all sparse-leg documents was reported as grounded.
+        //
+        // The setup matters. A first version of this test used a small
+        // corpus, where the dense leg's over-fetch covered every document
+        // and nothing needed backfilling — it passed with the backfill
+        // deleted. Here the query's common terms pull 20 filler documents
+        // above the rare-term document in the dense ranking, pushing it
+        // outside the dense leg's top-k while BM25 still ranks it first.
+        let dir = tempfile::tempdir().unwrap();
+        // Constructing a document that only the sparse leg can reach takes
+        // care, and two earlier fixtures failed to do it:
+        //
+        //  - if the corpus is small enough that the dense leg's over-fetch
+        //    (`top_k * 4`) covers every document, nothing needs backfilling
+        //    and the test passes with the backfill deleted;
+        //  - if the filler documents also match the query lexically, they
+        //    each collect a second RRF contribution and push the rare
+        //    document out of the final top-k entirely.
+        //
+        // So: 21 documents against an over-fetch of 8, and a query whose
+        // terms are `zzzrareterm` (matches only the rare document) and
+        // `alpha` (matches nothing lexically). The filler text `beta` is
+        // close to `alpha` *for the stub embedder* — both hash to bucket 23
+        // of 32 — so the fillers dominate the dense leg while contributing
+        // nothing to BM25. That collision is load-bearing here, not an
+        // accident: it is what separates the two legs.
+        let mut docs: Vec<_> = (0..20)
+            .map(|i| doc(&format!("d{i}"), "beta beta beta"))
+            .collect();
+        docs.push(doc(
+            "rare",
+            &format!("zzzrareterm {}", "padding ".repeat(200)),
+        ));
+        let r =
+            HybridRetriever::build(dir.path(), &docs, Box::new(StubEmbedder::hashing())).unwrap();
+
+        let hits = r.search("zzzrareterm alpha", 2).unwrap();
+        let rare = hits
+            .iter()
+            .find(|h| h.document.id == "rare")
+            .expect("BM25 must surface the rare-term document");
+        assert!(
+            rare.bm25_score.is_some(),
+            "the sparse leg is what put it here"
+        );
+        assert!(
+            rare.dense_score.is_some(),
+            "a sparse-leg hit must still carry its real dense score: {rare:?}"
+        );
+    }
+
+    #[test]
+    fn a_dense_score_of_none_means_only_that_the_dense_leg_did_not_run() {
+        // The complement of the test above, and the meaning the grounding
+        // gate depends on.
+        let dir = tempfile::tempdir().unwrap();
+        let docs = vec![doc("d1", "The withdraw path calls close_account.")];
+        let r = HybridRetriever::build(dir.path(), &docs, Box::new(DeadEmbedder)).unwrap();
+        let hits = r.search("close_account", 5).unwrap();
+        assert!(hits.iter().all(|h| h.dense_score.is_none()));
     }
 
     #[test]

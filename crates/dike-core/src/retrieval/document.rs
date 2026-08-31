@@ -220,12 +220,31 @@ pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
             Document {
                 id: format!("{}#{}", source.id, index),
                 source_url: source.url.clone(),
-                title: title.unwrap_or_else(|| source.title.clone()),
+                title: compose_title(&source.title, title.as_deref()),
                 text,
                 class_tags,
             }
         })
         .collect()
+}
+
+/// Build a chunk's title from its source and its own heading.
+///
+/// A chunk's heading alone is a terrible citation: real corpus documents
+/// carry headings like "Mitigation Guidance", "Review Signals" or "See it in
+/// code", and an auditor following a citation to "See it in code" learns
+/// nothing about which rule or file it came from. The source title is what
+/// supplies that context, so both are kept.
+///
+/// A heading that already starts with the source title is not repeated —
+/// several sources title their opening chunk with the document title itself.
+fn compose_title(source_title: &str, heading: Option<&str>) -> String {
+    match heading {
+        None => source_title.to_string(),
+        Some(h) if h.trim().is_empty() => source_title.to_string(),
+        Some(h) if h == source_title => source_title.to_string(),
+        Some(h) => format!("{source_title} — {h}"),
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +302,47 @@ class_tags = ["missing-signer"]
             .join("corpus")
             .join("sources.toml");
         load_manifest(&path).unwrap()
+    }
+
+    #[test]
+    fn a_chunk_title_carries_its_source_not_only_its_heading() {
+        // The live corpus produced citations reading "Mitigation Guidance",
+        // "Review Signals" and "See it in code" — headings that identify
+        // nothing on their own. A citation has to say which document it
+        // came from.
+        assert_eq!(
+            compose_title("Signer And Authority Enforcement", Some("Review Signals")),
+            "Signer And Authority Enforcement — Review Signals"
+        );
+    }
+
+    #[test]
+    fn a_chunk_with_no_heading_falls_back_to_the_source_title() {
+        assert_eq!(compose_title("Source", None), "Source");
+        assert_eq!(compose_title("Source", Some("   ")), "Source");
+    }
+
+    #[test]
+    fn a_heading_equal_to_the_source_title_is_not_doubled() {
+        // Several sources open with a heading that repeats the document
+        // title; "X — X" is noise in every citation that chunk appears in.
+        assert_eq!(compose_title("Account Validation", Some("Account Validation")), "Account Validation");
+    }
+
+    #[test]
+    fn chunk_titles_from_a_real_source_are_prefixed() {
+        let source = src();
+        let chunks = chunk_by_finding(
+            &source,
+            "## Review Signals\nA signal that is long enough to survive the minimum chunk \
+             length rule applied when short fragments accumulate into their successor.",
+        );
+        assert!(
+            chunks[0].title.starts_with(&source.title),
+            "got: {}",
+            chunks[0].title
+        );
+        assert!(chunks[0].title.contains("Review Signals"), "got: {}", chunks[0].title);
     }
 
     #[test]
