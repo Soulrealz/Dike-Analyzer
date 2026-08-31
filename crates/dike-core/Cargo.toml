@@ -18,6 +18,7 @@ flate2.workspace = true
 tar.workspace = true
 sha2.workspace = true
 tantivy.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
