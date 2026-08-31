@@ -37,8 +37,8 @@ kind = "archive"
 url = "https://codeload.github.com/coral-xyz/sealevel-attacks/tar.gz/refs/heads/master"
 title = "Sealevel Attacks — canonical Solana vulnerability classes"
 license = "Apache-2.0 (code samples); cite, do not redistribute verbatim"
-retrieved = "2026-08-28"
-sha256 = ""
+retrieved = "2026-08-31"
+sha256 = "46436a5745ddef275ea2da9feb42311f9fea7dd01992fed5bc672c3bf1bd1df6"
 class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap"]
 
 [[source]]
@@ -47,8 +47,8 @@ kind = "page"
 url = "https://neodyme.io/en/blog/solana_common_pitfalls/"
 title = "Neodyme — Solana common pitfalls"
 license = "All rights reserved; fetched for local indexing only, not redistributed"
-retrieved = "2026-08-28"
-sha256 = ""
+retrieved = "2026-08-31"
+sha256 = "dfefd7beb7e98aaed1596be55028a8291c0a83b16d6c65855b413e19c94ebe59"
 class_tags = ["missing-signer", "unchecked-arithmetic", "missing-owner-check"]
 
 [[source]]
@@ -57,8 +57,8 @@ kind = "page"
 url = "https://www.anchor-lang.com/docs/references/account-constraints"
 title = "Anchor account constraint reference"
 license = "Apache-2.0"
-retrieved = "2026-08-28"
-sha256 = ""
+retrieved = "2026-08-31"
+sha256 = "4f19a8ddb63aa3bfb868a7b7fba7559d6f820a38c6d418cdbb8e39faf1222964"
 class_tags = ["pda-validation-gap", "missing-authority-binding"]
 
 [[source]]
@@ -67,8 +67,8 @@ kind = "local"
 url = "corpus/notes"
 title = "Derived notes (original work)"
 license = "Ours"
-retrieved = "2026-08-28"
-sha256 = ""
+retrieved = "2026-08-31"
+sha256 = "bc78a3bb2683af01a1697bf6715648d62bdc8bf1214eff53fcebc483419a1764"
 class_tags = []
 
 [[source]]
@@ -78,7 +78,7 @@ url = "https://codeload.github.com/Copenhagen0x/solana-security-standard/tar.gz/
 title = "Solana Security Standard — SOL-0XX bug-class rules"
 license = "MIT"
 retrieved = "2026-08-31"
-sha256 = ""
+sha256 = "b91a8d4545d32e6726756fed39443ca416e5b44097813ab4a5db76da3824b20a"
 class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap", "unchecked-arithmetic"]
 # Without this filter the repo's 26 KB README, 43 KB CHANGELOG, issue
 # templates and CLI docs would be indexed alongside the 52 rule files.
@@ -92,7 +92,7 @@ url = "https://codeload.github.com/beriktassuly/solana-audit-skill/tar.gz/refs/h
 title = "Solana audit taxonomy — one reference per vulnerability class"
 license = "MIT"
 retrieved = "2026-08-31"
-sha256 = ""
+sha256 = "eea4c98215d2c1bbfc464f7617d116771ec7a77928f59839f23c0a1aa5bdcaf5"
 class_tags = ["missing-signer", "missing-owner-check", "missing-authority-binding", "pda-validation-gap", "unchecked-arithmetic"]
 # The taxonomy files carry `##` headings every few lines, which is what the
 # chunker keys on. `public-audit-corpus.md` is deliberately NOT included:

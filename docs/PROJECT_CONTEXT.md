@@ -57,7 +57,7 @@ clean code.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phases 6–8** — Track 2 LLM, mutation engine, differential eval harness. Not started.
 
-268 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+282 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -171,13 +171,14 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 2 | Exit 0 when findings exist; non-zero only on tool failure | `commands/analyze.rs`, end-to-end checks |
 | 3 | Detectors are pure — no I/O, no clock, no randomness | Convention + review; Track 1 must be reproducible |
 | 4 | Per-detector confidence values are pinned constants | The eval harness compares runs over time |
-| 5 | Identical input yields byte-identical output | `merge::rank` sorts with explicit tiebreakers |
+| 5 | Identical input yields byte-identical output | `merge::rank` sorts with explicit tiebreakers; `Bm25Index::search` truncates *after* its sort (see Quirks — `TopDocs::with_limit` is not build-stable) |
 | 6 | Partial results beat no results | Per-file parse tolerance; per-entry archive tolerance |
 | 7 | Findings merge on `(handler_id, class)`, never on span or id | `Finding::merge_key` |
 | 8 | Fetched corpus content is never committed | `.gitignore`, and the licensing note below |
 | 9 | A finding never points at line 0 | `attr_line`-with-fallback in constraint detectors |
 | 10 | A vector search across a model/dimension mismatch refuses rather than scoring | `StoreError::ModelMismatch`; the store's `meta` table records `(model, dim)` |
 | 11 | An unavailable embedder degrades retrieval to sparse-only; it never empties it | `HybridRetriever::dense_leg` returns `None` on `HttpError`, and two tests cover the build-time and query-time paths separately |
+| 12 | `RetrievalHit::dense_score` is `None` only when the dense leg did not run | `HybridRetriever::search` backfills via `VectorStore::scores_for`; the grounding gate reads this distinction |
 
 ---
 
@@ -247,9 +248,38 @@ real constraint. Ordinary choices need no justification.
   the second needs a human.
 
 - **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
-  component legs (dense cosine ≥ 0.35, or any non-zero BM25 score). An RRF score
-  is rank-derived, so its magnitude says nothing about relevance: the top
-  document of a garbage list scores `1/61`, exactly what a perfect match scores.
+  component legs. An RRF score is rank-derived, so its magnitude says nothing
+  about relevance: the top document of a garbage list scores `1/61`, exactly
+  what a perfect match scores.
+
+- **The grounding thresholds are measured, not inherited from the spec (D11,
+  revised 2026-08-31).** The spec's "dense ≥ 0.35 OR any non-zero BM25" accepted
+  every query, including nonsense ones. Measured over the real 358-document
+  corpus with BGE-small-en v1.5, best score per query: off-topic queries reach
+  dense **0.566** and BM25 **16.0**; on-topic queries bottom out at dense
+  **0.664** and BM25 **2.6**. Two consequences. Dense separates cleanly but only
+  well above 0.35 — these embeddings put unrelated text at ~0.5 — so the
+  threshold is now **0.62**, with deliberately asymmetric margins because the
+  on-topic minimum is an identifier query, the case dense retrieval handles
+  worst. And BM25 cannot stand alone: its ranges overlap almost completely, so
+  it grounds only when the dense leg did not run at all. Re-tuning for another
+  embedding model means re-running that measurement, not nudging the number;
+  a test pins the threshold inside the measured envelope.
+
+- **`Bm25Index::search` collects every match and truncates after sorting.**
+  `TopDocs::with_limit(k)` chooses *which* equally-scoring documents survive by
+  internal document address, which depends on how tantivy's multi-threaded
+  writer laid out segments during the build — so two builds of the same corpus
+  returned different tied sets, changing the fused ranking and the citations.
+  Found as a flaky test; on the real corpus 21 documents tied on one query. The
+  cost is bounded by corpus size (hundreds at v1). If that stops being true, the
+  fix is a collector that breaks ties on the id field, never a return to an
+  unstable limit.
+
+- **A chunk's title carries its source, not only its heading.** The live corpus
+  produced citations reading "Mitigation Guidance", "Review Signals" and "See it
+  in code" — headings that identify nothing. Titles are now
+  `<source title> — <heading>`.
 
 - **A dead embedder degrades; a model mismatch does not.** `HybridRetriever`
   treats an unreachable embedder as an availability problem and retrieves with
@@ -317,5 +347,6 @@ notes and *is* committed.
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |
 | Change how vectors are stored or scored | `crates/dike-core/src/retrieval/store.rs` (the `VectorStore` interface hides the sqlite choice) |
 | Change how the two retrieval legs are combined | `crates/dike-core/src/retrieval/rrf.rs` (fusion + the grounding gate) and `retriever.rs` (the legs) |
+| Re-tune grounding for a different embedding model | Re-run the measurement recorded in `retrieval/rrf.rs`'s module docs, then move `DENSE_GROUNDING_THRESHOLD` and its envelope test together |
 | Give Track 2 a stub corpus in a test | Implement `Retrieve` — Track 2 holds a `Box<dyn Retrieve>`, never a concrete retriever |
 | Understand why `dike-core` rejects a word | `crates/dike-core/tests/seam.rs` |
