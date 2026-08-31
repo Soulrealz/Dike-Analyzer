@@ -1,9 +1,15 @@
-//! `dike corpus fetch`: pull every source in `corpus/sources.toml` into
-//! `corpus/cache`, reporting per-source status and a summary.
+//! The `dike corpus` subcommands.
 //!
-//! `index` and `query` (BM25 search over the fetched corpus) and `hash`
-//! (print the corpus hash) land in Task 18 — this file is deliberately
-//! fetch-only for now.
+//! - `fetch` pulls every source in `corpus/sources.toml` into `corpus/cache`.
+//! - `index` builds the hybrid retrieval index from the cached text.
+//! - `query` searches it and reports whether the result is grounded.
+//! - `hash` prints the corpus hash that goes into a report's metadata.
+//!
+//! `index` and `query` are the only commands in this project that need a
+//! live embedding model. Each one's work is split into an inner function
+//! taking explicit paths and a `Box<dyn Embedder>`, so the wiring is
+//! testable against a stub with nothing running; the public wrappers supply
+//! the repo paths and an `OllamaEmbedder`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,11 +17,22 @@ use std::time::Duration;
 
 use anyhow::Context;
 use dike_core::http::HttpClient;
-use dike_core::retrieval::{fetch_source, load_manifest, FetchOutcome};
+use dike_core::retrieval::{
+    corpus_hash, fetch_source, is_grounded, load_cached, load_manifest, Document, Embedder,
+    FetchOutcome, HybridRetriever, OllamaEmbedder, Retrieve,
+};
 
 const MANIFEST_PATH: &str = "corpus/sources.toml";
 const CACHE_DIR: &str = "corpus/cache";
+const INDEX_DIR: &str = "corpus/index";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default Ollama host. A default, never a constant baked into the library:
+/// `OllamaEmbedder` takes host and model as parameters (D26), and this is
+/// the one place a default lives.
+pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
+/// Default embedding model.
+pub const DEFAULT_EMBED_MODEL: &str = "bge-small-en-v1.5";
 
 /// Run `dike corpus fetch [--update-hashes] [--verify]`.
 pub fn fetch(update_hashes: bool, verify: bool) -> anyhow::Result<()> {
@@ -72,6 +89,139 @@ pub fn fetch(update_hashes: bool, verify: bool) -> anyhow::Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Load the cached corpus named by the manifest.
+///
+/// An empty corpus is an error rather than an empty index: every later
+/// command would otherwise succeed while silently retrieving nothing.
+fn load_corpus(manifest_path: &Path, cache_dir: &Path) -> anyhow::Result<Vec<Document>> {
+    let sources = load_manifest(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let docs = load_cached(&sources, cache_dir)
+        .with_context(|| format!("reading cached corpus from {}", cache_dir.display()))?;
+    if docs.is_empty() {
+        anyhow::bail!(
+            "no cached corpus in {} — run `dike corpus fetch` first",
+            cache_dir.display()
+        );
+    }
+    Ok(docs)
+}
+
+/// Run `dike corpus index`.
+pub fn index(rebuild: bool, embed_model: &str, ollama_host: &str) -> anyhow::Result<()> {
+    let embedder = OllamaEmbedder::new(ollama_host, embed_model)
+        .map_err(|e| anyhow::anyhow!("building the embedder: {e}"))?;
+    let summary = index_at(
+        Path::new(INDEX_DIR),
+        Path::new(MANIFEST_PATH),
+        Path::new(CACHE_DIR),
+        rebuild,
+        Box::new(embedder),
+    )?;
+    println!("{summary}");
+    Ok(())
+}
+
+/// Build the index at `index_dir` and return the line to print.
+///
+/// `--rebuild` deletes the index directory first. Without it a build still
+/// replaces every document it is given, but IDs that have since left the
+/// corpus survive in the vector store — `rebuild` is how those go away.
+fn index_at(
+    index_dir: &Path,
+    manifest_path: &Path,
+    cache_dir: &Path,
+    rebuild: bool,
+    embedder: Box<dyn Embedder>,
+) -> anyhow::Result<String> {
+    let docs = load_corpus(manifest_path, cache_dir)?;
+    if rebuild && index_dir.exists() {
+        std::fs::remove_dir_all(index_dir)
+            .with_context(|| format!("removing {}", index_dir.display()))?;
+    }
+    let model = embedder.model_name();
+    let retriever = HybridRetriever::build(index_dir, &docs, embedder)?;
+    Ok(format!(
+        "indexed {} document(s) into {} (embedding model: {}, corpus hash: {})",
+        docs.len(),
+        index_dir.display(),
+        model,
+        retriever.corpus_hash()
+    ))
+}
+
+/// Run `dike corpus query`.
+pub fn query(text: &str, top_k: usize, embed_model: &str, ollama_host: &str) -> anyhow::Result<()> {
+    let embedder = OllamaEmbedder::new(ollama_host, embed_model)
+        .map_err(|e| anyhow::anyhow!("building the embedder: {e}"))?;
+    let rendered = query_at(
+        Path::new(INDEX_DIR),
+        Path::new(MANIFEST_PATH),
+        Path::new(CACHE_DIR),
+        text,
+        top_k,
+        Box::new(embedder),
+    )?;
+    print!("{rendered}");
+    Ok(())
+}
+
+/// Search the index and render the result.
+///
+/// Scores are printed at fixed precision so two runs over one corpus are
+/// diffable (Rule 5). A leg that did not return a document prints `-`, which
+/// is how a sparse-only run — the embedder being down — is visible rather
+/// than looking like a corpus with nothing in it.
+fn query_at(
+    index_dir: &Path,
+    manifest_path: &Path,
+    cache_dir: &Path,
+    text: &str,
+    top_k: usize,
+    embedder: Box<dyn Embedder>,
+) -> anyhow::Result<String> {
+    let docs = load_corpus(manifest_path, cache_dir)?;
+    if !index_dir.exists() {
+        anyhow::bail!(
+            "no index at {} — run `dike corpus index` first",
+            index_dir.display()
+        );
+    }
+    let retriever = HybridRetriever::open(index_dir, docs, embedder)?;
+    let hits = retriever.search(text, top_k)?;
+
+    let mut out = String::new();
+    for hit in &hits {
+        out.push_str(&format!(
+            "{:.4}  {}  {}  dense={} bm25={}\n",
+            hit.rrf_score,
+            hit.document.id,
+            hit.document.title,
+            render_score(hit.dense_score),
+            render_score(hit.bm25_score),
+        ));
+    }
+    if hits.is_empty() {
+        out.push_str("no hits\n");
+    }
+    out.push_str(&format!("grounded: {}\n", is_grounded(&hits)));
+    Ok(out)
+}
+
+fn render_score(score: Option<f32>) -> String {
+    match score {
+        Some(s) => format!("{s:.4}"),
+        None => "-".to_string(),
+    }
+}
+
+/// Run `dike corpus hash`: print the corpus hash for embedding in reports.
+pub fn hash() -> anyhow::Result<()> {
+    let docs = load_corpus(Path::new(MANIFEST_PATH), Path::new(CACHE_DIR))?;
+    println!("{}", corpus_hash(&docs));
     Ok(())
 }
 
@@ -168,6 +318,223 @@ fn parse_toml_string_assignment(after_key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use dike_core::http::HttpError;
+
+    /// A deterministic bag-of-words hashing embedder: no network, no model,
+    /// but real cosines, so a dense-leg assertion means something.
+    struct StubEmbedder;
+
+    impl Embedder for StubEmbedder {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, HttpError> {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0.0f32; 32];
+                    for word in t.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                        if word.is_empty() {
+                            continue;
+                        }
+                        let bucket = word
+                            .to_lowercase()
+                            .bytes()
+                            .fold(7u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                        v[(bucket as usize) % 32] += 1.0;
+                    }
+                    v
+                })
+                .collect())
+        }
+        fn model_name(&self) -> String {
+            "stub-hashing-32".to_string()
+        }
+    }
+
+    /// Stands in for "the embedding model is not running".
+    struct DeadEmbedder;
+
+    impl Embedder for DeadEmbedder {
+        fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, HttpError> {
+            Err(HttpError::Unavailable("connection refused".into()))
+        }
+        fn model_name(&self) -> String {
+            "dead".to_string()
+        }
+    }
+
+    /// A manifest plus a cache directory, entirely inside a tempdir. Nothing
+    /// here touches the repo's real corpus or the network.
+    fn corpus_fixture(entries: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("sources.toml");
+        let cache = dir.path().join("cache");
+        let index = dir.path().join("index");
+        std::fs::create_dir_all(&cache).unwrap();
+
+        let mut toml = String::new();
+        for (id, text) in entries {
+            toml.push_str(&format!(
+                "[[source]]\nid = \"{id}\"\nkind = \"page\"\nurl = \"https://example.invalid/{id}\"\ntitle = \"{id}\"\nlicense = \"L\"\nretrieved = \"2026-01-01\"\nsha256 = \"\"\nclass_tags = []\n\n"
+            ));
+            std::fs::write(cache.join(format!("{id}.txt")), text).unwrap();
+        }
+        std::fs::write(&manifest, toml).unwrap();
+        (dir, manifest, cache, index)
+    }
+
+    #[test]
+    fn index_at_reports_the_document_count_and_the_corpus_hash() {
+        let (_d, manifest, cache, index) = corpus_fixture(&[
+            ("alpha", "# Missing owner validation\nThe handler never checks the owner."),
+            ("beta", "# Unchecked arithmetic\nThe balance wraps on overflow."),
+        ]);
+        let summary =
+            index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        let docs = load_corpus(&manifest, &cache).unwrap();
+        assert!(summary.contains(&format!("indexed {} document(s)", docs.len())), "{summary}");
+        assert!(summary.contains(&corpus_hash(&docs)), "{summary}");
+        assert!(summary.contains("stub-hashing-32"), "{summary}");
+    }
+
+    #[test]
+    fn index_at_refuses_an_empty_cache_with_an_actionable_message() {
+        // A manifest listing a source whose text was never fetched: this is
+        // the state a fresh clone is in, and indexing nothing would leave
+        // every later command succeeding while retrieving nothing.
+        let (_d, manifest, cache, index) =
+            corpus_fixture(&[("alpha", "# Missing owner validation\nno owner check")]);
+        std::fs::remove_file(cache.join("alpha.txt")).unwrap();
+        let err = index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("dike corpus fetch"),
+            "the error must say what to run: {err:#}"
+        );
+    }
+
+    #[test]
+    fn index_at_survives_a_dead_embedder_so_the_corpus_is_still_searchable() {
+        let (_d, manifest, cache, index) =
+            corpus_fixture(&[("alpha", "# Missing owner validation\nno owner check")]);
+        index_at(&index, &manifest, &cache, false, Box::new(DeadEmbedder)).unwrap();
+        let out = query_at(&index, &manifest, &cache, "owner", 5, Box::new(DeadEmbedder)).unwrap();
+        assert!(out.contains("dense=-"), "a missing dense leg is visible: {out}");
+        assert!(out.contains("grounded: true"), "BM25 alone still grounds: {out}");
+    }
+
+    #[test]
+    fn query_at_renders_a_score_line_per_hit_and_a_grounded_line() {
+        let (_d, manifest, cache, index) = corpus_fixture(&[
+            ("alpha", "# Missing owner validation\nThe handler never checks the owner."),
+            ("beta", "# Unchecked arithmetic\nThe balance wraps on overflow."),
+        ]);
+        index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        let out =
+            query_at(&index, &manifest, &cache, "owner", 5, Box::new(StubEmbedder)).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() >= 2, "{out}");
+        assert!(lines[0].contains("dense=") && lines[0].contains("bm25="), "{out}");
+        assert_eq!(lines.last().copied().unwrap(), "grounded: true", "{out}");
+    }
+
+    #[test]
+    fn query_at_says_no_hits_rather_than_printing_only_a_grounded_line() {
+        let (_d, manifest, cache, index) =
+            corpus_fixture(&[("alpha", "# Missing owner validation\nno owner check")]);
+        index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        // A dead embedder skips the dense leg, and a term in no document
+        // returns nothing from BM25 either.
+        let out = query_at(
+            &index,
+            &manifest,
+            &cache,
+            "zzzznotinanydocument",
+            5,
+            Box::new(DeadEmbedder),
+        )
+        .unwrap();
+        assert!(out.contains("no hits"), "{out}");
+        assert!(out.contains("grounded: false"), "{out}");
+    }
+
+    #[test]
+    fn query_at_reports_a_missing_index_rather_than_failing_obscurely() {
+        let (_d, manifest, cache, index) =
+            corpus_fixture(&[("alpha", "# Missing owner validation\nno owner check")]);
+        let err =
+            query_at(&index, &manifest, &cache, "owner", 5, Box::new(StubEmbedder)).unwrap_err();
+        assert!(
+            err.to_string().contains("dike corpus index"),
+            "the error must say what to run: {err}"
+        );
+    }
+
+    #[test]
+    fn rebuild_drops_vectors_for_documents_that_have_left_the_corpus() {
+        // Observed in the store, not through `query`: a query cannot see a
+        // stale row anyway, because hydration drops IDs the corpus no longer
+        // has. That makes a query-level assertion here pass with or without
+        // the flag -- it would prove hydration, not `--rebuild`. What the
+        // flag actually governs is whether the row survives on disk.
+        let (_d, manifest, cache, index) = corpus_fixture(&[
+            ("alpha", "# Missing owner validation\nThe handler never checks the owner."),
+            ("beta", "# Stale document\nzzzuniquetoken appears only here."),
+        ]);
+        index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        let store_path = index.join("vectors.db");
+        assert_eq!(
+            dike_core::retrieval::VectorStore::open(&store_path).unwrap().len().unwrap(),
+            2
+        );
+
+        // "beta" leaves the corpus. Re-indexing without `--rebuild` leaves
+        // its vector behind...
+        std::fs::remove_file(cache.join("beta.txt")).unwrap();
+        index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        assert_eq!(
+            dike_core::retrieval::VectorStore::open(&store_path).unwrap().len().unwrap(),
+            2,
+            "without --rebuild the stale vector survives"
+        );
+
+        // ...and with it, the store is rebuilt from the corpus alone.
+        index_at(&index, &manifest, &cache, true, Box::new(StubEmbedder)).unwrap();
+        assert_eq!(
+            dike_core::retrieval::VectorStore::open(&store_path).unwrap().len().unwrap(),
+            1,
+            "--rebuild must drop the vector whose document is gone"
+        );
+    }
+
+    #[test]
+    fn query_output_is_byte_identical_across_runs() {
+        // Rule 5: the same corpus and the same query must be diffable.
+        let (_d, manifest, cache, index) = corpus_fixture(&[
+            ("alpha", "# Missing owner validation\nThe handler never checks the owner."),
+            ("beta", "# Unchecked arithmetic\nThe balance wraps on overflow."),
+        ]);
+        index_at(&index, &manifest, &cache, false, Box::new(StubEmbedder)).unwrap();
+        let first =
+            query_at(&index, &manifest, &cache, "owner", 5, Box::new(StubEmbedder)).unwrap();
+        for _ in 0..3 {
+            let again =
+                query_at(&index, &manifest, &cache, "owner", 5, Box::new(StubEmbedder)).unwrap();
+            assert_eq!(first, again);
+        }
+    }
+
+    #[test]
+    fn a_missing_score_renders_as_a_dash_not_as_zero() {
+        // `dense=0.0000` would read as "the model scored this zero", which
+        // is a different claim from "the dense leg did not run".
+        assert_eq!(render_score(None), "-");
+        assert_eq!(render_score(Some(0.0)), "0.0000");
+    }
+
+    #[test]
+    fn the_defaults_are_the_documented_ones() {
+        assert_eq!(DEFAULT_EMBED_MODEL, "bge-small-en-v1.5");
+        assert_eq!(DEFAULT_OLLAMA_HOST, "http://localhost:11434");
+    }
+
 
     // A manifest fixture, NEVER the repo's real `corpus/sources.toml`.
     // Deliberately gives "alpha" and "beta" the *same* `sha256` value so a

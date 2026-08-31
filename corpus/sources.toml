@@ -38,21 +38,35 @@ retrieved = "2026-08-28"
 sha256 = ""
 class_tags = []
 
-# The three entries below (ottersec-audit-reports, zellic-audit-reports,
-# sec3-audit-reports) are commented out because their `url` points at a
-# blog *index* page, not an individual report. Fetching an index page
-# yields navigation chrome and teaser text, not finding text, and that
-# junk would get indexed, embedded, and cited alongside real content.
-# Before `dike corpus fetch` is first run, someone with network access
-# must curate specific individual report URLs (e.g. permalinks to actual
-# PDF/HTML audit reports) and swap them in below — the entries are left
-# intact so that curation is a URL swap, not a rewrite.
+# ---------------------------------------------------------------------------
+# Audit-report sources — still commented out, but for a NEW reason (2026-08-31).
+#
+# The original blocker was that these URLs pointed at blog *index* pages, which
+# fetch as navigation chrome rather than finding text. The user has since
+# supplied better sources:
+#
+#   Zellic  https://reports.zellic.io/  — PDFs mirrored in
+#           https://github.com/Zellic/publications/tree/master
+#   sec3    https://github.com/sec3-service/reports  (not every report has a PDF)
+#   OtterSec https://osec.io/audits  — links out to PDFs
+#
+# All three are **PDF corpora**, and the fetch pipeline cannot read PDFs:
+#   - `kind = "page"`   runs `html_to_text`, which would produce binary noise
+#                       from a PDF and nav chrome from an index page;
+#   - `kind = "archive"` keeps only `.rs` and `.md` entries out of a tarball,
+#                       so a repo of PDFs yields at most its README;
+#   - `kind = "local"`   reads `.md` from the working tree.
+#
+# Enabling these therefore needs a PDF text-extraction step — a new
+# `SourceKind`, a new dependency, and an entry in PROJECT_CONTEXT.md — not a
+# URL swap. That is a task of its own, not a line in this file. Until it
+# exists, `load_manifest` returns 4 sources and a test asserts that count.
 #
 # [[source]]
 # id = "ottersec-audit-reports"
 # kind = "page"
-# url = "https://osec.io/blog"
-# title = "OtterSec — public audit report index"
+# url = "https://osec.io/audits"
+# title = "OtterSec — public audit reports"
 # license = "All rights reserved; fetched for local indexing only, not redistributed"
 # retrieved = "2026-08-28"
 # sha256 = ""
@@ -60,9 +74,9 @@ class_tags = []
 #
 # [[source]]
 # id = "zellic-audit-reports"
-# kind = "page"
-# url = "https://www.zellic.io/blog"
-# title = "Zellic — public audit report index"
+# kind = "archive"
+# url = "https://codeload.github.com/Zellic/publications/tar.gz/refs/heads/master"
+# title = "Zellic — public audit reports"
 # license = "All rights reserved; fetched for local indexing only, not redistributed"
 # retrieved = "2026-08-28"
 # sha256 = ""
@@ -70,9 +84,9 @@ class_tags = []
 #
 # [[source]]
 # id = "sec3-audit-reports"
-# kind = "page"
-# url = "https://www.sec3.dev/blog"
-# title = "sec3 — public audit report index"
+# kind = "archive"
+# url = "https://codeload.github.com/sec3-service/reports/tar.gz/refs/heads/main"
+# title = "sec3 — public audit reports"
 # license = "All rights reserved; fetched for local indexing only, not redistributed"
 # retrieved = "2026-08-28"
 # sha256 = ""

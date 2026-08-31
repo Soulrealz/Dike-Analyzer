@@ -54,10 +54,10 @@ clean code.
 - **Phase 2** — Anchor IR and parser (`syn`-based), `dike ir` debug command.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
-- **Phase 5** — corpus document model, manifest, chunking, hashing (done); HTTP layer and `dike corpus fetch` (done); BM25 sparse index (done); embedder + vector store (done); RRF fusion and the `Retrieve` seam (done); `dike corpus index|query` CLI wiring (next — gated on the first live Ollama run).
+- **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phases 6–8** — Track 2 LLM, mutation engine, differential eval harness. Not started.
 
-248 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+258 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -91,7 +91,7 @@ clean code.
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
 │       └── src/
-│           ├── main.rs        clap subcommands: analyze, ir, corpus
+│           ├── main.rs        clap subcommands: analyze, ir, corpus fetch|index|query|hash
 │           ├── pipeline.rs    Runs both tracks, merges, builds the Report
 │           ├── config.rs      RunConfig
 │           └── commands/      analyze, ir, corpus
@@ -220,6 +220,17 @@ real constraint. Ordinary choices need no justification.
   of its stated requirements hold (one file, no server, reproducible from the
   fetch script), and at v1 corpus size a linear scan is sub-millisecond.
 
+- **`corpus index` and `corpus query` split into an inner function taking
+  explicit paths and a `Box<dyn Embedder>`.** The public wrappers supply the
+  repo paths and an `OllamaEmbedder`; the inner ones are what the tests drive,
+  with a stub embedder and a tempdir corpus. Without the split, every test of
+  the CLI wiring would need a live model and the repo's own corpus.
+
+- **A missing component score prints `-`, not `0.0000`.** "The model scored
+  this zero" and "the dense leg did not run" are different claims, and a
+  sparse-only run is exactly what an operator needs to see when the embedder
+  is down.
+
 - **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
   component legs (dense cosine ≥ 0.35, or any non-zero BM25 score). An RRF score
   is rank-derived, so its magnitude says nothing about relevance: the top
@@ -285,6 +296,7 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
+| Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
 | Add a corpus source | `corpus/sources.toml` |
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |
 | Change how vectors are stored or scored | `crates/dike-core/src/retrieval/store.rs` (the `VectorStore` interface hides the sqlite choice) |

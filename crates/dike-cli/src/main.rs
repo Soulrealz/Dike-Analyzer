@@ -48,6 +48,31 @@ enum CorpusCommand {
         #[arg(long, conflicts_with = "update_hashes")]
         verify: bool,
     },
+    /// Build the hybrid retrieval index from the fetched corpus.
+    ///
+    /// This is the first command that needs a live embedding model.
+    Index {
+        /// Delete the existing index first, so IDs that have left the
+        /// corpus do not survive in the vector store.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long, default_value = commands::corpus::DEFAULT_EMBED_MODEL)]
+        embed_model: String,
+        #[arg(long, default_value = commands::corpus::DEFAULT_OLLAMA_HOST)]
+        ollama_host: String,
+    },
+    /// Search the corpus index and report whether the result is grounded.
+    Query {
+        text: String,
+        #[arg(long, default_value_t = 5)]
+        top_k: usize,
+        #[arg(long, default_value = commands::corpus::DEFAULT_EMBED_MODEL)]
+        embed_model: String,
+        #[arg(long, default_value = commands::corpus::DEFAULT_OLLAMA_HOST)]
+        ollama_host: String,
+    },
+    /// Print the corpus hash that goes into a report's metadata.
+    Hash,
 }
 
 fn main() -> std::process::ExitCode {
@@ -62,6 +87,13 @@ fn main() -> std::process::ExitCode {
             CorpusCommand::Fetch { update_hashes, verify } => {
                 commands::corpus::fetch(update_hashes, verify)
             }
+            CorpusCommand::Index { rebuild, embed_model, ollama_host } => {
+                commands::corpus::index(rebuild, &embed_model, &ollama_host)
+            }
+            CorpusCommand::Query { text, top_k, embed_model, ollama_host } => {
+                commands::corpus::query(&text, top_k, &embed_model, &ollama_host)
+            }
+            CorpusCommand::Hash => commands::corpus::hash(),
         },
     };
     match result {
