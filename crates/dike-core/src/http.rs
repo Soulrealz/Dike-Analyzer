@@ -50,12 +50,36 @@ impl HttpClient {
         url: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, HttpError> {
-        let resp = self
-            .client
-            .post(url)
-            .json(body)
-            .send()
-            .map_err(map_reqwest_err)?;
+        self.post_json_with(url, body, &[], None)
+    }
+
+    /// `post_json` with per-request headers and an optional per-request
+    /// timeout that overrides the client's default.
+    ///
+    /// Both exist for the LLM clients: a generation call needs minutes where
+    /// a corpus fetch needs seconds (spec §9's pathological handler), and one
+    /// backend authenticates with a header. Adding them here rather than
+    /// letting those clients build their own `reqwest` requests is what keeps
+    /// the connection-refused-to-[`HttpError::Unavailable`] mapping in one
+    /// place (D24).
+    ///
+    /// Header values may be secrets. They are attached to the request and
+    /// never logged, never echoed into an error, and never stored.
+    pub fn post_json_with(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+        timeout: Option<Duration>,
+    ) -> Result<serde_json::Value, HttpError> {
+        let mut req = self.client.post(url).json(body);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
+        let resp = req.send().map_err(map_reqwest_err)?;
         let resp = check_status(resp)?;
         resp.json::<serde_json::Value>()
             .map_err(|e| HttpError::Transport(e.to_string()))

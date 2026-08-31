@@ -55,9 +55,10 @@ clean code.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
-- **Phases 6–8** — Track 2 LLM, mutation engine, differential eval harness. Not started.
+- **Phase 6** — Track 2 LLM: the `LlmClient` seam with Ollama and Gemini backends is in place (Task 19); handler chunking, the derived query, and pipeline wiring are not.
+- **Phases 7–8** — mutation engine, differential eval harness. Not started.
 
-282 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+296 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -78,6 +79,7 @@ clean code.
 │   │   │   ├── analyzer.rs    Analyzer trait, SourceTree ingest, Diagnostic, AnalysisResult
 │   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
+│   │   │   ├── llm/           LlmClient seam + Ollama and Gemini backends
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -247,6 +249,18 @@ real constraint. Ordinary choices need no justification.
   maintainers added findings" from "the fetch captured a login page", and only
   the second needs a human.
 
+- **`GeminiClient` has a hand-written, redacting `Debug`.** A derived one would
+  print the API key into every `{:?}`, `unwrap` panic, `assert!` message and
+  `tracing` field that ever touched the struct — the usual way secrets reach
+  logs. The key travels in the `x-goog-api-key` header rather than the URL for
+  the same reason: URLs reach logs, proxies and error messages.
+
+- **`HttpClient::post_json_with` takes headers and a per-request timeout.** A
+  generation call needs minutes where a corpus fetch needs seconds, and one
+  backend authenticates with a header. Letting the LLM clients build their own
+  `reqwest` requests instead would duplicate the connection-refused-to-
+  `Unavailable` mapping that D24 exists to centralise.
+
 - **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
   component legs. An RRF score is rank-derived, so its magnitude says nothing
   about relevance: the top document of a garbage list scores `1/61`, exactly
@@ -342,6 +356,7 @@ notes and *is* committed.
 | Change the report | `crates/dike-core/src/report/` |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
 | Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
+| Swap the generation model or backend | `crates/dike-core/src/llm/` — implement `LlmClient`, or pass a different model string; the pipeline holds a `Box<dyn LlmClient>` |
 | Add a corpus source | `corpus/sources.toml` — set `include_paths` for any repository whose Markdown is mostly not corpus material |
 | Know when to re-fetch the corpus | The refresh rule at the top of `corpus/sources.toml` |
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |
