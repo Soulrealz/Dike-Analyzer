@@ -48,7 +48,7 @@ url = "https://neodyme.io/en/blog/solana_common_pitfalls/"
 title = "Neodyme — Solana common pitfalls"
 license = "All rights reserved; fetched for local indexing only, not redistributed"
 retrieved = "2026-08-31"
-sha256 = "dfefd7beb7e98aaed1596be55028a8291c0a83b16d6c65855b413e19c94ebe59"
+sha256 = "7323394a08a99ad1a3b599ad40855c06e350904dbbd16a371441677d38eccf90"
 class_tags = ["missing-signer", "unchecked-arithmetic", "missing-owner-check"]
 
 [[source]]
@@ -58,7 +58,7 @@ url = "https://www.anchor-lang.com/docs/references/account-constraints"
 title = "Anchor account constraint reference"
 license = "Apache-2.0"
 retrieved = "2026-08-31"
-sha256 = "4f19a8ddb63aa3bfb868a7b7fba7559d6f820a38c6d418cdbb8e39faf1222964"
+sha256 = "7f0454daab12b50e7d85af6e95acde974f0672440ee5da7a400a650a25b8a694"
 class_tags = ["pda-validation-gap", "missing-authority-binding"]
 
 [[source]]

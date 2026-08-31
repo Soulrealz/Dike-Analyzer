@@ -187,6 +187,18 @@ pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
         match &mut pending {
             Some(p) if p.1.trim().len() < 200 => {
                 p.1.push_str(&text);
+                // Adopt the absorbed fragment's heading when the pending
+                // one has none. A page whose text begins before its first
+                // heading (fetched HTML usually does: nav chrome, a date
+                // line) produces a leading untitled fragment, and it is
+                // shorter than 200 characters often enough to matter. With
+                // the pending title kept unconditionally, that fragment
+                // swallowed the first real section *and its heading*, so
+                // the section that a citation should have named fell back
+                // to the source title instead.
+                if p.0.is_none() {
+                    p.0 = title;
+                }
             }
             _ => {
                 if let Some(done) = pending.take() {
@@ -343,6 +355,44 @@ class_tags = ["missing-signer"]
             chunks[0].title
         );
         assert!(chunks[0].title.contains("Review Signals"), "got: {}", chunks[0].title);
+    }
+
+    #[test]
+    fn a_short_untitled_lead_in_adopts_the_heading_it_absorbs() {
+        // Fetched pages usually open with untitled chrome before the first
+        // heading. When that lead-in is short it merges forward, and
+        // keeping its (absent) title meant the first real section's heading
+        // never reached a citation.
+        let source = src();
+        let text = format!(
+            "nav chrome\n## First Section\n{}\n## Second Section\n{}\n",
+            "alpha ".repeat(60),
+            "beta ".repeat(60)
+        );
+        let chunks = chunk_by_finding(&source, &text);
+        assert!(
+            chunks[0].title.contains("First Section"),
+            "got: {:?}",
+            chunks.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_titled_pending_chunk_keeps_its_own_heading_when_it_absorbs_another() {
+        // The complement: adoption must only fill an *absent* title, never
+        // overwrite one. Otherwise a chunk would be named after the last
+        // section merged into it rather than the one it starts with.
+        let source = src();
+        let text = format!(
+            "## First Section\nshort\n## Second Section\n{}\n",
+            "beta ".repeat(60)
+        );
+        let chunks = chunk_by_finding(&source, &text);
+        assert!(
+            chunks[0].title.contains("First Section"),
+            "got: {:?}",
+            chunks.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]

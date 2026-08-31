@@ -55,10 +55,10 @@ clean code.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
-- **Phase 6** — Track 2 LLM: the `LlmClient` seam with Ollama and Gemini backends is in place (Task 19); handler chunking, the derived query, and pipeline wiring are not.
+- **Phase 6** — Track 2 LLM: the `LlmClient` seam with Ollama and Gemini backends (Task 19) and handler chunking with derived retrieval queries (Task 20) are in place; structured output, citation validation and pipeline wiring are not.
 - **Phases 7–8** — mutation engine, differential eval harness. Not started.
 
-296 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+322 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -87,8 +87,9 @@ clean code.
 │   │   └── tests/seam.rs      ARCHITECTURAL GATE — fails the build on Solana vocabulary
 │   ├── dike-lang-anchor/      Solana/Anchor-specific. Everything domain lives here.
 │   │   ├── src/
-│   │   │   ├── ir.rs          The Anchor IR: Program, Handler, AccountsStruct, Constraint…
+│   │   │   │   │   ├── ir.rs          The Anchor IR: Program, Handler, AccountsStruct, Constraint…
 │   │   │   ├── parser/        syn-based parsing: accounts, program, symbols, body summary
+│   │   │   ├── chunker/       HandlerUnit chunking + derived retrieval queries
 │   │   │   ├── detectors/     Five static detectors + the suppression pass
 │   │   │   └── lib.rs         AnchorAnalyzer, analyze_program
 │   │   └── tests/end_to_end.rs
@@ -261,6 +262,30 @@ real constraint. Ordinary choices need no justification.
   `reqwest` requests instead would duplicate the connection-refused-to-
   `Unavailable` mapping that D24 exists to centralise.
 
+- **HTML headings are re-emitted as Markdown headings (D27).** `chunk_by_finding`
+  splits on Markdown headings and finding-ID tokens, and a stripped HTML page has
+  neither — so every fetched page became *one* document. Measured on the live
+  corpus before the fix: the constraint reference was a single 11 KB chunk and the
+  pitfalls page a single 23 KB chunk, they topped nearly every search, and their
+  citations pointed at a whole page. After it: 33 and 25 chunks, medians 255 and
+  325 characters. `h5`/`h6` render as four hashes because that is the deepest level
+  the chunker treats as a boundary. Anchor-link pilcrows are stripped in the same
+  pass — generated docs put one inside every heading, and it reached every citation.
+
+- **A short untitled lead-in adopts the heading it absorbs.** Fetched pages open
+  with untitled chrome before their first heading; when that fragment is under the
+  200-character merge threshold it merges forward, and keeping its absent title
+  meant the first real section's heading never reached a citation. Adoption only
+  fills an absent title, never overwrites one — otherwise a chunk would be named
+  after the last section merged into it.
+
+- **The derived query renders wrappers as `Account of Vault`, not
+  `Account<Vault>`.** `Bm25Index::search` turns each whitespace-separated term into
+  a zero-slop phrase, so the angle-bracket form tokenises to the adjacent pair
+  `account vault` and misses a document written `Account<'info, Vault>`
+  (`account info vault`). This is the caller obligation that module documents, and
+  the derived query is its first real caller.
+
 - **The grounding gate never thresholds the RRF score.** `is_grounded` asks the
   component legs. An RRF score is rank-derived, so its magnitude says nothing
   about relevance: the top document of a garbage list scores `1/61`, exactly
@@ -354,6 +379,7 @@ notes and *is* committed.
 | Change what the IR captures | `crates/dike-lang-anchor/src/ir.rs`, then `parser/` |
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
+| Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
 | Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
 | Swap the generation model or backend | `crates/dike-core/src/llm/` — implement `LlmClient`, or pass a different model string; the pipeline holds a `Box<dyn LlmClient>` |

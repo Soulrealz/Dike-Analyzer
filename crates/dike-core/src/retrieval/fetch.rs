@@ -52,6 +52,11 @@ pub fn html_to_text(html: &str) -> String {
     let n = chars.len();
     let mut out = String::with_capacity(html.len());
     let mut i = 0;
+    // Set after a heading marker is emitted, to swallow the whitespace
+    // between `<h2>` and its text so the title lands on the marker's own
+    // line. Without it, `<h2>\n  Title</h2>` produces a bare `## ` line and
+    // the chunker takes the boundary but finds no title text on it.
+    let mut skip_leading_ws = false;
 
     // A `<` only starts a tag if the next character is ASCII-alphabetic,
     // `/`, or `!` (covers ordinary tags, closing tags, comments, and
@@ -173,6 +178,13 @@ pub fn html_to_text(html: &str) -> String {
 
     while i < n {
         if chars[i] != '<' {
+            if skip_leading_ws {
+                if chars[i].is_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                skip_leading_ws = false;
+            }
             out.push(chars[i]);
             i += 1;
             continue;
@@ -295,11 +307,43 @@ pub fn html_to_text(html: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
             .to_ascii_lowercase();
-        if BLOCK_TAGS.contains(&tag_name.as_str()) && (is_closing || tag_name == "br") {
+        // Headings become Markdown headings rather than bare text (D27).
+        //
+        // The chunker splits on Markdown headings and finding-ID tokens. A
+        // fetched HTML page has neither once its tags are stripped, so a
+        // whole page collapsed into ONE document: measured on the live
+        // corpus, `anchor-constraints` was a single 11 KB chunk and
+        // `neodyme-pitfalls` a single 23 KB chunk. A chunk that large
+        // matches almost any query in its domain — it topped nearly every
+        // search — and a citation pointing at it tells an auditor to go
+        // read the page, which is precisely what citations exist to avoid.
+        //
+        // `h5`/`h6` render as four hashes because that is the deepest level
+        // the chunker treats as a boundary; emitting five would silently
+        // stop being a boundary at all.
+        if let Some(level) = heading_level(&tag_name) {
+            if is_closing {
+                out.push('\n');
+            } else {
+                out.push('\n');
+                for _ in 0..level {
+                    out.push('#');
+                }
+                out.push(' ');
+                skip_leading_ws = true;
+            }
+        } else if BLOCK_TAGS.contains(&tag_name.as_str()) && (is_closing || tag_name == "br") {
             out.push('\n');
         }
         i = j + 1;
     }
+
+    // Documentation generators (MkDocs, Sphinx, Docusaurus) put a pilcrow
+    // inside every heading as the anchor-link glyph, so stripped headings
+    // arrive as `Example¶` and every citation carries the artefact. It is
+    // decoration in generated docs and vanishingly rare in prose, so it is
+    // dropped outright rather than only in headings.
+    let out = out.replace('\u{00b6}', "");
 
     let decoded = out
         .replace("&lt;", "<")
@@ -316,6 +360,21 @@ pub fn html_to_text(html: &str) -> String {
         .join("\n");
 
     collapse_blank_line_runs(&trimmed)
+}
+
+/// The Markdown heading depth an HTML heading tag maps to, or `None`.
+///
+/// `h5` and `h6` map to 4: `chunk_by_finding` treats `#` through `####` as
+/// boundaries and anything deeper as ordinary text.
+fn heading_level(tag_name: &str) -> Option<usize> {
+    match tag_name {
+        "h1" => Some(1),
+        "h2" => Some(2),
+        "h3" => Some(3),
+        "h4" => Some(4),
+        "h5" | "h6" => Some(4),
+        _ => None,
+    }
 }
 
 /// Collapse runs of 3+ consecutive newlines down to 2.
@@ -596,6 +655,87 @@ mod tests {
         assert!(text.contains("Real content here."));
         assert!(!text.contains("color:red"), "style body must not enter the corpus");
         assert!(!text.contains("alert"), "script body must not enter the corpus");
+    }
+
+    #[test]
+    fn a_heading_permalink_glyph_never_reaches_a_citation() {
+        // Real corpus artefact: the fetched pitfalls page chunked into
+        // sections titled `Example\u{00b6}`.
+        let out = html_to_text("<h2>Example\u{00b6}</h2><p>Body.</p>");
+        assert!(out.contains("## Example"), "got: {out:?}");
+        assert!(!out.contains('\u{00b6}'), "got: {out:?}");
+    }
+
+    #[test]
+    fn a_heading_becomes_a_markdown_heading_so_the_chunker_can_split_on_it() {
+        // Measured defect (2026-08-31): with headings stripped to bare text,
+        // a fetched page had no chunk boundaries at all and became ONE
+        // document — 11 KB for the constraint reference, 23 KB for a blog
+        // post. Those chunks topped nearly every search and cited a whole
+        // page instead of a finding.
+        let out = html_to_text("<h1>Title</h1><p>Body text.</p><h2>Second</h2><p>More.</p>");
+        assert!(out.contains("# Title"), "got: {out:?}");
+        assert!(out.contains("## Second"), "got: {out:?}");
+    }
+
+    #[test]
+    fn a_heading_marker_starts_its_own_line_with_the_title_on_it() {
+        // `chunk_by_finding` reads the `#` at byte 0 of a line and takes the
+        // rest of that line as the chunk's title, so a marker stranded on a
+        // line of its own yields a boundary with an empty title.
+        let out = html_to_text("<p>Intro.</p>\n<h2>\n   Spaced Title\n</h2>\n<p>Body.</p>");
+        assert!(
+            out.lines().any(|l| l == "## Spaced Title"),
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn deep_headings_stay_at_the_deepest_level_the_chunker_recognises() {
+        // Five hashes is not a boundary, so `h5` would silently stop
+        // chunking rather than chunk more finely.
+        let out = html_to_text("<h5>Deep</h5><h6>Deeper</h6>");
+        assert!(out.contains("#### Deep"), "got: {out:?}");
+        assert!(out.contains("#### Deeper"), "got: {out:?}");
+        assert!(!out.contains("##### "), "got: {out:?}");
+    }
+
+    #[test]
+    fn heading_text_itself_is_never_lost() {
+        // The whitespace-skipping after a marker must not eat real text.
+        let out = html_to_text("<h3>Bump Seed Canonicalization</h3>");
+        assert!(out.contains("Bump Seed Canonicalization"), "got: {out:?}");
+    }
+
+    #[test]
+    fn a_page_with_headings_chunks_into_more_than_one_document() {
+        // The end-to-end property the change exists for, asserted through
+        // the chunker rather than on the intermediate text.
+        use crate::retrieval::document::{chunk_by_finding, Source, SourceKind};
+        let html = format!(
+            "<h2>First Section</h2><p>{}</p><h2>Second Section</h2><p>{}</p>",
+            "alpha ".repeat(80),
+            "beta ".repeat(80)
+        );
+        let text = html_to_text(&html);
+        let source = Source {
+            id: "s".into(),
+            url: "https://example.invalid/p".into(),
+            title: "T".into(),
+            license: "l".into(),
+            retrieved: "2026-08-31".into(),
+            sha256: String::new(),
+            class_tags: vec![],
+            kind: SourceKind::Page,
+            include_paths: vec![],
+        };
+        let chunks = chunk_by_finding(&source, &text);
+        assert!(chunks.len() >= 2, "got {} chunk(s): {text:?}", chunks.len());
+        assert!(
+            chunks.iter().any(|c| c.title.contains("First Section")),
+            "the heading must reach the citation: {:?}",
+            chunks.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
