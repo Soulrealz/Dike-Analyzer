@@ -307,7 +307,7 @@ pub fn html_to_text(html: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
             .to_ascii_lowercase();
-        // Headings become Markdown headings rather than bare text (D27).
+        // Headings become Markdown headings rather than bare text (D28).
         //
         // The chunker splits on Markdown headings and finding-ID tokens. A
         // fetched HTML page has neither once its tags are stripped, so a

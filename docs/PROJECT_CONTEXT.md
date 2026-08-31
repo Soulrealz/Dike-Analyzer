@@ -55,10 +55,10 @@ clean code.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
-- **Phase 6** — Track 2 LLM: the `LlmClient` seam with Ollama and Gemini backends (Task 19) and handler chunking with derived retrieval queries (Task 20) are in place; structured output, citation validation and pipeline wiring are not.
+- **Phase 6** — Track 2 LLM: the `LlmClient` seam and both backends (Task 19), handler chunking with derived retrieval queries (Task 20), and structured output with retry and citation validation (Task 21) are in place; the assembled `LlmAnalyzer` and its pipeline wiring are not.
 - **Phases 7–8** — mutation engine, differential eval harness. Not started.
 
-322 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+349 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -79,7 +79,7 @@ clean code.
 │   │   │   ├── analyzer.rs    Analyzer trait, SourceTree ingest, Diagnostic, AnalysisResult
 │   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
-│   │   │   ├── llm/           LlmClient seam + Ollama and Gemini backends
+│   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -262,7 +262,21 @@ real constraint. Ordinary choices need no justification.
   `reqwest` requests instead would duplicate the connection-refused-to-
   `Unavailable` mapping that D24 exists to centralise.
 
-- **HTML headings are re-emitted as Markdown headings (D27).** `chunk_by_finding`
+- **A hallucinated citation deletes itself, and an uncited finding is dropped
+  (D12).** `validate_citations` keeps only ids that were actually offered to the
+  model. Without it, "cite your sources" is a request the model can decline
+  silently, and grounding becomes decoration rather than a filter. Duplicate
+  citations collapse first, because `track2_confidence` reads the count — citing one
+  document twice must not buy the same up-weighting as citing two.
+
+- **A schema violation is retried exactly once, then dropped.** The violation text
+  goes back to the model in the retry prompt. A third attempt would spend another
+  full timeout on a model that has already failed the same schema twice. A
+  *transport* failure propagates instead: flattening it into an empty result would
+  make "the model reviewed this and found nothing" indistinguishable from "the model
+  is not running", and the report would claim coverage the run never had.
+
+- **HTML headings are re-emitted as Markdown headings (D28).** `chunk_by_finding`
   splits on Markdown headings and finding-ID tokens, and a stripped HTML page has
   neither — so every fetched page became *one* document. Measured on the live
   corpus before the fix: the constraint reference was a single 11 KB chunk and the
@@ -346,10 +360,21 @@ notes and *is* committed.
 
 ## Known gaps
 
-- Three audit-report sources in `corpus/sources.toml` are commented out: they
-  pointed at blog *index* pages, which fetch as navigation chrome rather than
-  finding text. Curating specific report URLs is a prerequisite for the first
-  real `corpus fetch`.
+- **Track 2 invents its own class labels, and nothing yet constrains them.**
+  Observed live on 2026-08-31: asked to review an unauthenticated privileged
+  operation, the model answered with class
+  `PrivilegedOperationWithoutAuthentication` rather than `missing-signer`.
+  `Finding::merge_key` is `(handler_id, class)`, so a Track 2 finding can only
+  corroborate a Track 1 one when the class strings match exactly — with free-form
+  labels, corroboration (D4) would essentially never fire and every LLM finding
+  would arrive as a separate, uncorroborated row. Task 22's prompt must pass the
+  known class vocabulary (the constants in
+  `dike-lang-anchor/src/detectors/mod.rs`) and constrain the model to it; the CLI
+  is the place that can see both sides of the seam to do that.
+- Three audit-report sources in `corpus/sources.toml` are commented out: they are
+  PDF corpora, and the fetch pipeline reads no PDFs. Two MIT-licensed Markdown
+  sources now cover the same classes, so this may never need solving — see the
+  commented block in `corpus/sources.toml`.
 - `cargo fmt --check` fails repo-wide; there is no `rustfmt.toml` and the house
   style does not match rustfmt defaults. Must be settled before CI adds a fmt gate.
 - `html_to_text` (`crates/dike-core/src/retrieval/fetch.rs`) silently drops

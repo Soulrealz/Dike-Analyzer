@@ -15,11 +15,15 @@
 
 pub mod gemini;
 pub mod ollama;
+pub mod structured;
 
 use std::time::Duration;
 
 pub use gemini::GeminiClient;
 pub use ollama::OllamaClient;
+pub use structured::{
+    complete_structured, parse_findings, validate_citations, RawLlmFinding, SchemaViolation,
+};
 
 use crate::http::HttpError;
 
