@@ -21,12 +21,17 @@ pub fn render(report: &Report) -> String {
 
     out.push_str("## Coverage\n\n");
     out.push_str(&format!(
-        "- Files parsed: {}/{}\n- Handlers found: {}\n- Lines of code: {}\n- Findings suppressed by imperative checks: {}\n\n",
+        "- Files parsed: {}/{}\n- Handlers found: {}\n- Lines of code: {}\n- Findings suppressed by imperative checks: {}\n- Track 2 units examined: {}/{}\n\n",
         report.coverage.files_parsed,
         report.coverage.files_total,
         report.coverage.handlers,
         report.coverage.loc,
         report.coverage.suppressed,
+        // Rendered even when Track 2 did not run (0/0): a reader comparing
+        // two reports needs to see that the row exists and is empty, rather
+        // than wonder whether the tool forgot to mention it.
+        report.coverage.units_examined,
+        report.coverage.units_total,
     ));
     if !report.diagnostics.is_empty() {
         out.push_str("### Diagnostics\n\n");

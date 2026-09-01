@@ -23,6 +23,19 @@ enum Command {
         out: Option<std::path::PathBuf>,
         #[arg(long)]
         llm: bool,
+        #[arg(long, default_value = commands::corpus::DEFAULT_OLLAMA_HOST)]
+        ollama_host: String,
+        /// Generation model for Track 2.
+        #[arg(long, default_value = "qwen2.5-coder:14b")]
+        model: String,
+        #[arg(long, default_value = commands::corpus::DEFAULT_EMBED_MODEL)]
+        embed_model: String,
+        /// Corpus index directory built by `dike corpus index`.
+        #[arg(long, default_value = commands::corpus::INDEX_DIR)]
+        index_dir: std::path::PathBuf,
+        /// Documents retrieved per handler.
+        #[arg(long, default_value_t = 5)]
+        top_k: usize,
     },
     /// Debug: parse a program directory and print its IR as JSON.
     Ir { path: std::path::PathBuf },
@@ -79,9 +92,27 @@ fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt().with_writer(std::io::stderr).init();
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Analyze { path, format, out, llm } => {
-            commands::analyze::run(RunConfig { root: path, format, out, llm })
-        }
+        Command::Analyze {
+            path,
+            format,
+            out,
+            llm,
+            ollama_host,
+            model,
+            embed_model,
+            index_dir,
+            top_k,
+        } => commands::analyze::run(RunConfig {
+            root: path,
+            format,
+            out,
+            llm,
+            ollama_host,
+            model,
+            embed_model,
+            index_dir,
+            top_k,
+        }),
         Command::Ir { path } => commands::ir::run(path),
         Command::Corpus { command } => match command {
             CorpusCommand::Fetch { update_hashes, verify } => {

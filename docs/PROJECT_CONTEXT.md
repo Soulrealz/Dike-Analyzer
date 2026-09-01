@@ -55,10 +55,10 @@ clean code.
 - **Phase 3** — five static detectors plus the suppression pass.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
-- **Phase 6** — Track 2 LLM: the `LlmClient` seam and both backends (Task 19), handler chunking with derived retrieval queries (Task 20), and structured output with retry and citation validation (Task 21) are in place; the assembled `LlmAnalyzer` and its pipeline wiring are not.
+- **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
 - **Phases 7–8** — mutation engine, differential eval harness. Not started.
 
-349 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+369 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -91,6 +91,7 @@ clean code.
 │   │   │   ├── parser/        syn-based parsing: accounts, program, symbols, body summary
 │   │   │   ├── chunker/       HandlerUnit chunking + derived retrieval queries
 │   │   │   ├── detectors/     Five static detectors + the suppression pass
+│   │   │   ├── llm_analyzer/  Track 2 assembled: chunk, retrieve, ask, validate
 │   │   │   └── lib.rs         AnchorAnalyzer, analyze_program
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
@@ -105,7 +106,8 @@ clean code.
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
 ├── tests/fixtures/programs/   Anchor fixture programs (deliberately NO Cargo.toml —
-│                              they are parsed as text, never built)
+│   ├── vault/                 they are parsed as text, never built)
+│   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it
 ├── Cargo.toml                 Workspace root; all dependency versions pinned here
 ├── Cargo.lock                 COMMITTED — this workspace ships a binary
 ├── rust-toolchain.toml        Pins stable + rustfmt + clippy
@@ -262,6 +264,14 @@ real constraint. Ordinary choices need no justification.
   `reqwest` requests instead would duplicate the connection-refused-to-
   `Unavailable` mapping that D24 exists to centralise.
 
+- **The generation request caps output tokens (`num_predict`).** Measured on
+  2026-09-01: one handler consumed the entire 120-second per-unit budget twice
+  running and was dropped, while an identically shaped prompt answered in 7
+  seconds — a runaway generation, not a slow one. The cap turns that into a
+  truncated reply, which is a schema violation costing one retry and then a
+  logged drop. With it, the clean fixture went from 3/4 units examined in 2m43
+  to 4/4 in 1m01.
+
 - **A hallucinated citation deletes itself, and an uncited finding is dropped
   (D12).** `validate_citations` keeps only ids that were actually offered to the
   model. Without it, "cite your sources" is a request the model can decline
@@ -276,7 +286,7 @@ real constraint. Ordinary choices need no justification.
   make "the model reviewed this and found nothing" indistinguishable from "the model
   is not running", and the report would claim coverage the run never had.
 
-- **HTML headings are re-emitted as Markdown headings (D28).** `chunk_by_finding`
+- **HTML headings are re-emitted as Markdown headings (D31).** `chunk_by_finding`
   splits on Markdown headings and finding-ID tokens, and a stripped HTML page has
   neither — so every fetched page became *one* document. Measured on the live
   corpus before the fix: the constraint reference was a single 11 KB chunk and the

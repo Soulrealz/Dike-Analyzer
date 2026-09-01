@@ -448,6 +448,7 @@ dependencies = [
 name = "dike-lang-anchor"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "dike-core",
  "proc-macro2",
@@ -455,6 +456,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.119",
+ "tempfile",
 ]
 
 [[package]]

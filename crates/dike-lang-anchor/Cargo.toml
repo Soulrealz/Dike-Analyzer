@@ -12,3 +12,9 @@ syn.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
 blake3.workspace = true
+
+[dev-dependencies]
+# The `Retrieve` trait returns `anyhow::Result`, so a stub retriever in a
+# test has to name the type.
+anyhow.workspace = true
+tempfile.workspace = true

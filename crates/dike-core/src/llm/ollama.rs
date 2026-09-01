@@ -3,6 +3,17 @@
 use crate::http::HttpClient;
 use crate::llm::{map_http_err, LlmClient, LlmError, LlmRequest};
 
+/// Hard ceiling on generated tokens.
+///
+/// A JSON array of findings never needs anywhere near this much. The cap
+/// exists for the failure mode measured on 2026-09-01: one handler
+/// repeatedly consumed the entire 120-second budget and was dropped, while
+/// an identically shaped prompt answered in 7 seconds — a runaway
+/// generation, not a slow one. Truncation turns that into a schema
+/// violation, which costs one retry and then a logged drop, instead of
+/// stalling the whole unit for two minutes.
+const MAX_OUTPUT_TOKENS: u32 = 1024;
+
 pub struct OllamaClient {
     pub host: String,
     pub model: String,
@@ -22,19 +33,30 @@ impl OllamaClient {
     }
 }
 
+impl OllamaClient {
+    /// The request body, separated from the call so its shape is testable
+    /// without a server.
+    fn request_body(&self, req: &LlmRequest) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model,
+            "system": req.system,
+            "prompt": req.user,
+            "stream": false,
+            "options": {
+                "temperature": req.temperature,
+                "num_predict": MAX_OUTPUT_TOKENS,
+            },
+        })
+    }
+}
+
 impl LlmClient for OllamaClient {
     fn name(&self) -> String {
         format!("ollama/{}", self.model)
     }
 
     fn complete(&self, req: &LlmRequest) -> Result<String, LlmError> {
-        let body = serde_json::json!({
-            "model": self.model,
-            "system": req.system,
-            "prompt": req.user,
-            "stream": false,
-            "options": { "temperature": req.temperature },
-        });
+        let body = self.request_body(req);
         let resp = self
             .http
             .post_json_with(
@@ -89,6 +111,17 @@ mod tests {
             "RunMetadata::model comes from here; a bare backend name is not reproducible"
         );
         assert!(c.name().starts_with("ollama/"), "got: {}", c.name());
+    }
+
+    #[test]
+    fn the_request_caps_generated_tokens() {
+        // Pins the runaway-generation guard: without `num_predict`, a model
+        // that starts repeating consumes the entire per-unit timeout and the
+        // handler is dropped from the run.
+        let c = OllamaClient::new("http://127.0.0.1:1", "m").unwrap();
+        let body = c.request_body(&LlmRequest::new("s", "u"));
+        assert_eq!(body["options"]["num_predict"], MAX_OUTPUT_TOKENS);
+        assert_eq!(body["stream"], false, "a streamed reply would not parse");
     }
 
     #[test]

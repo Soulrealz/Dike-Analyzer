@@ -30,6 +30,13 @@ pub struct Coverage {
     pub loc: usize,
     /// Findings withheld by the imperative-check suppression pass (D15).
     pub suppressed: usize,
+    /// Review units Track 2 found, and how many it actually sent to a model.
+    /// Both zero when Track 2 did not run at all — which the diagnostics
+    /// section distinguishes from "it ran and examined nothing".
+    #[serde(default)]
+    pub units_total: usize,
+    #[serde(default)]
+    pub units_examined: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,7 +94,15 @@ mod tests {
                 kind: DiagnosticKind::ParseFailure,
                 message: "expected `}`".into(),
             }],
-            coverage: Coverage { files_total: 2, files_parsed: 1, handlers: 3, loc: 250, suppressed: 1 },
+            coverage: Coverage {
+                files_total: 2,
+                files_parsed: 1,
+                handlers: 3,
+                loc: 250,
+                suppressed: 1,
+                units_total: 4,
+                units_examined: 2,
+            },
         }
     }
 

@@ -22,9 +22,9 @@ use dike_core::retrieval::{
     FetchOutcome, HybridRetriever, OllamaEmbedder, Retrieve,
 };
 
-const MANIFEST_PATH: &str = "corpus/sources.toml";
-const CACHE_DIR: &str = "corpus/cache";
-const INDEX_DIR: &str = "corpus/index";
+pub const MANIFEST_PATH: &str = "corpus/sources.toml";
+pub const CACHE_DIR: &str = "corpus/cache";
+pub const INDEX_DIR: &str = "corpus/index";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default Ollama host. A default, never a constant baked into the library:

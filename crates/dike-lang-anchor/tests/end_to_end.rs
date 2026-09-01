@@ -25,6 +25,53 @@ fn clean_fixture_produces_a_low_noise_floor() {
     );
 }
 
+/// The deliberately vulnerable counterpart to the clean fixture.
+///
+/// It exists so both tracks can be exercised against code that *should*
+/// produce findings — the clean fixture proves the noise floor, and this one
+/// proves the detectors still fire on a whole program rather than on
+/// in-memory mutations of a correct one. Also the Track 2 fixture: a run that
+/// finds nothing on it is a regression, not a clean bill of health.
+fn leaky_fixture() -> SourceTree {
+    SourceTree::load(Path::new("../../tests/fixtures/programs/leaky_vault")).unwrap()
+}
+
+#[test]
+fn the_vulnerable_fixture_produces_findings_in_every_class_it_was_written_for() {
+    let result = dike_lang_anchor::AnchorAnalyzer.analyze(&leaky_fixture());
+    let classes: Vec<&str> = result.findings.iter().map(|f| f.class.as_str()).collect();
+    for expected in [
+        "missing-signer",
+        "missing-owner-check",
+        "missing-authority-binding",
+        "unchecked-arithmetic",
+    ] {
+        assert!(
+            classes.contains(&expected),
+            "the fixture was written to trigger `{expected}`; got: {classes:?}"
+        );
+    }
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.class.as_str() == "missing-signer" && f.location.handler == "withdraw"),
+        "the headline defect is the unsigned authority on `withdraw`: {:#?}",
+        result.findings
+    );
+}
+
+#[test]
+fn the_vulnerable_fixture_is_never_built() {
+    // Fixture programs are parsed as text. A Cargo.toml appearing here would
+    // make `cargo test` at the workspace root try to compile a program that
+    // deliberately does not compile.
+    assert!(
+        !Path::new("../../tests/fixtures/programs/leaky_vault/Cargo.toml").exists(),
+        "fixture programs must not be buildable crates"
+    );
+}
+
 /// Mutates `Withdraw`'s `admin: Signer<'info>` (tests/fixtures/programs/vault/src/lib.rs)
 /// down to `AccountInfo<'info>`, removing its signer-ness.
 ///

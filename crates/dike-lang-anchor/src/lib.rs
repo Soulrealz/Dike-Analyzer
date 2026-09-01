@@ -1,5 +1,6 @@
 pub mod chunker;
 pub mod detectors;
+pub mod llm_analyzer;
 pub mod ir;
 pub mod parser;
 
@@ -63,6 +64,9 @@ pub fn analyze_program(tree: &SourceTree) -> AnchorAnalysis {
 
     AnchorAnalysis {
         result: AnalysisResult {
+            // The static track reviews the whole tree, not a sequence of
+            // units, so it reports no unit coverage (D28).
+            units: None,
             findings,
             diagnostics,
             files_analyzed: parsed.files_parsed,

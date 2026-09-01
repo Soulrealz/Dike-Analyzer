@@ -93,11 +93,27 @@ pub struct Diagnostic {
     pub message: String,
 }
 
+/// How much of a track's own review unit it actually examined.
+///
+/// A track that skipped most of its units because nothing in the corpus
+/// supported them produces a *thin* report; a track whose model was down
+/// produces an *empty* one. Both look identical in a findings list, so the
+/// counts are carried explicitly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnitCoverage {
+    pub total: usize,
+    pub examined: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisResult {
     pub findings: Vec<Finding>,
     pub diagnostics: Vec<Diagnostic>,
     pub files_analyzed: usize,
+    /// `None` for a track with no unit concept — a static analyzer reviews
+    /// the whole tree, not a sequence of units. Additive (D28): the field
+    /// has a `Default`, so existing constructions keep compiling.
+    pub units: Option<UnitCoverage>,
 }
 
 /// The extensibility seam. A Solidity port implements this and touches nothing else.

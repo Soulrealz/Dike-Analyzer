@@ -42,6 +42,10 @@ pub fn run(
             handlers: coverage_extra.0,
             loc: tree.total_loc(),
             suppressed: coverage_extra.1,
+            // A track with no unit concept reports `None`, which renders as
+            // zero rather than panicking.
+            units_total: l.units.map(|u| u.total).unwrap_or(0),
+            units_examined: l.units.map(|u| u.examined).unwrap_or(0),
         },
     }
 }
@@ -86,6 +90,7 @@ mod tests {
         }
         fn analyze(&self, tree: &SourceTree) -> AnalysisResult {
             AnalysisResult {
+                units: None,
                 findings: vec![finding(Track::Static, "withdraw")],
                 diagnostics: vec![],
                 files_analyzed: tree.files.len(),
@@ -100,6 +105,7 @@ mod tests {
         }
         fn analyze(&self, tree: &SourceTree) -> AnalysisResult {
             AnalysisResult {
+                units: None,
                 findings: vec![finding(Track::Llm, "withdraw")],
                 diagnostics: vec![],
                 files_analyzed: tree.files.len(),

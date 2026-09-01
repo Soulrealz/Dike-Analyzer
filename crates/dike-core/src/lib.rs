@@ -7,7 +7,9 @@ pub mod report;
 pub mod retrieval;
 
 pub use finding::{Citation, Finding, Location, Severity, Track, VulnClass};
-pub use analyzer::{AnalysisResult, Analyzer, Diagnostic, DiagnosticKind, SourceFile, SourceTree};
+pub use analyzer::{
+    AnalysisResult, Analyzer, Diagnostic, DiagnosticKind, SourceFile, SourceTree, UnitCoverage,
+};
 pub use report::{Coverage, Report, RunMetadata, TrackFindings};
 pub use llm::{LlmClient, LlmError, LlmRequest};
 pub use retrieval::{

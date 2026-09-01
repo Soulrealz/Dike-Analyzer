@@ -9,7 +9,13 @@ pub struct RunConfig {
     pub root: std::path::PathBuf,
     pub format: Format,
     pub out: Option<std::path::PathBuf>,
-    /// Track 2 is opt-in until Phase 6 lands; the flag exists from day one so the
-    /// pipeline signature never changes underneath callers.
+    /// Track 2 is opt-in: it needs a model and an indexed corpus, and a run
+    /// without it is still a complete Track 1 run.
     pub llm: bool,
+    pub ollama_host: String,
+    /// Generation model. A parameter, never a constant (D26).
+    pub model: String,
+    pub embed_model: String,
+    pub index_dir: std::path::PathBuf,
+    pub top_k: usize,
 }
