@@ -10,7 +10,7 @@ use dike_lang_anchor::llm_analyzer::LlmAnalyzer;
 /// Every failure here is a *degraded* run, never a tool failure: a missing
 /// index or an unbuildable client still leaves a complete Track 1 report, and
 /// exiting non-zero would contradict Rule 4.
-fn build_llm_analyzer(cfg: &RunConfig) -> Option<LlmAnalyzer> {
+pub(crate) fn build_llm_analyzer(cfg: &RunConfig) -> Option<LlmAnalyzer> {
     if !cfg.index_dir.exists() {
         eprintln!(
             "dike: no corpus index at {}; run `dike corpus index` first. Running Track 1 only.",

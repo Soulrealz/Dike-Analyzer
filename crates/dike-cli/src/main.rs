@@ -53,6 +53,48 @@ enum Command {
 
 #[derive(Subcommand)]
 enum EvalCommand {
+    /// Score the analyzer against injected defects: mutate, validate, run both
+    /// programs, diff, and append the result to the history series.
+    Run {
+        /// Clean programs to mutate. A mutation applied to already-broken code
+        /// cannot be attributed.
+        #[arg(required = true)]
+        programs: Vec<std::path::PathBuf>,
+        /// Which tracks to run. `static` needs no model and no network.
+        #[arg(long, value_enum, default_value_t = commands::eval::TrackSelection::Static)]
+        track: commands::eval::TrackSelection,
+        /// The history series to append to.
+        #[arg(long, default_value = "benchmarks/history.json")]
+        out: std::path::PathBuf,
+        /// Where mutant trees are materialized.
+        #[arg(long, default_value = "target/eval")]
+        work_dir: std::path::PathBuf,
+        /// Skip `cargo check` on each mutant. Findings on a mutant that no
+        /// longer compiles inflate recall (D14) — for iteration, never for
+        /// numbers you intend to quote.
+        #[arg(long)]
+        no_compile_check: bool,
+        /// Identifies this run in the series. Defaults to the timestamp.
+        #[arg(long)]
+        run_id: Option<String>,
+        #[arg(long, default_value = commands::corpus::DEFAULT_OLLAMA_HOST)]
+        ollama_host: String,
+        #[arg(long, default_value = "qwen2.5-coder:14b")]
+        model: String,
+        #[arg(long, default_value = commands::corpus::DEFAULT_EMBED_MODEL)]
+        embed_model: String,
+        #[arg(long, default_value = commands::corpus::INDEX_DIR)]
+        index_dir: std::path::PathBuf,
+        #[arg(long, default_value_t = 5)]
+        top_k: usize,
+    },
+    /// Report the real-holdout scaffold, with the memorization caveat.
+    Holdout {
+        /// Score a holdout that has already been scored once. Doing so is
+        /// tuning on the test set; the flag exists so that choice is explicit.
+        #[arg(long)]
+        force: bool,
+    },
     /// Inject one vulnerability per site into a clean program and write one
     /// case directory per mutant.
     Mutate {
@@ -142,6 +184,38 @@ fn main() -> std::process::ExitCode {
             EvalCommand::Mutate { program, out, no_compile_check } => {
                 commands::eval::mutate(program, out, no_compile_check)
             }
+            EvalCommand::Run {
+                programs,
+                track,
+                out,
+                work_dir,
+                no_compile_check,
+                run_id,
+                ollama_host,
+                model,
+                embed_model,
+                index_dir,
+                top_k,
+            } => commands::eval::run(commands::eval::EvalRunConfig {
+                programs,
+                track,
+                out,
+                work_dir,
+                no_compile_check,
+                run_id,
+                llm: RunConfig {
+                    root: std::path::PathBuf::new(),
+                    format: Format::Md,
+                    out: None,
+                    llm: true,
+                    ollama_host,
+                    model,
+                    embed_model,
+                    index_dir,
+                    top_k,
+                },
+            }),
+            EvalCommand::Holdout { force } => commands::eval::holdout(force),
         },
         Command::Corpus { command } => match command {
             CorpusCommand::Fetch { update_hashes, verify } => {

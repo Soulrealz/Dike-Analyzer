@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Deterministic: no model, no GPU, no corpus. Everything here must pass.
+  #
+  # There is deliberately no `cargo fmt --check` step. The house style is
+  # hand-formatted and no rustfmt configuration reproduces it — measured on
+  # 2026-09-03, the default disagrees in 257 places and
+  # `use_small_heuristics = "Max"` disagrees in 283. Enforcing it would mean a
+  # tree-wide reformat that rewrites blame across every file for no behavioural
+  # gain, so the gate is clippy, which catches what actually matters here.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # The eval job's validity gate builds the fixture's Solana dependency
+      # tree. Without a cache that is the whole runtime of this workflow.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (deny-by-default)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: The architectural seam
+        run: cargo test -p dike-core --test seam
+
+      # Exit 0 with no findings on correct code is the pass condition, not a
+      # formality: a detector that fires here is a false positive on every user.
+      - name: Clean fixture reports nothing
+        run: cargo run -p dike-cli -- analyze tests/fixtures/programs/vault
+
+      - name: Static eval
+        run: cargo run -p dike-cli -- eval run tests/fixtures/programs/vault --track static
+
+      # `eval run` appends to benchmarks/history.json. CI must not commit that —
+      # a series entry per push would bury the runs anyone actually cares about.
+      - name: The eval series is not modified in CI
+        run: git checkout -- benchmarks/history.json
+
+  # Optional, and never a reason for a red build: it needs a key that forks and
+  # most contributors do not have. Track 2's own model runs locally and GitHub
+  # runners have no GPU (spec §8), so a hosted frontier model is the only way to
+  # exercise the LLM path in CI at all.
+  llm-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: check
+    if: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Skip without a key
+        id: key
+        run: |
+          if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "no GEMINI_API_KEY; skipping the LLM smoke check"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Track 2 also needs an indexed corpus, which needs an embedding model.
+      # Until that is available to a runner this stays a build-and-wire check
+      # rather than a scored eval: it proves the LLM path compiles and is
+      # reachable, and says so rather than pretending to be a measurement.
+      - name: Build the LLM path
+        if: steps.key.outputs.present == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: cargo build -p dike-cli

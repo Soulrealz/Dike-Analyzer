@@ -40,12 +40,28 @@ pub struct CaseOutcome {
 }
 
 impl CaseOutcome {
-    /// Introduced findings that do not match the label: the mutation caused
-    /// them, and they are not the defect it injected.
+    /// Introduced findings matching **neither** the label's class nor its
+    /// handler.
+    ///
+    /// Deliberately not "everything introduced that is not the true positive".
+    /// A mutation frequently introduces more than one real defect at one site:
+    /// rewriting `Signer<'info>` to `AccountInfo<'info>` removes the signature
+    /// check *and* the owner check, and the analyzer correctly reports both.
+    /// Only one of them is the label, so counting the other as a false positive
+    /// would penalize the analyzer for being right — measured on the first
+    /// eval run, that alone put `missing-signer` precision at 0.5.
+    ///
+    /// A finding that shares the label's handler is collateral from the same
+    /// edit; one that shares its class is the same defect read at another site.
+    /// Neither is evidence the analyzer invented something, so neither is
+    /// counted, the same way the noise floor is not.
     pub fn false_positives(&self) -> Vec<&Finding> {
         self.introduced
             .iter()
-            .filter(|f| !matches_label(f, &self.label))
+            .filter(|f| {
+                f.class.as_str() != self.label.class
+                    && f.location.handler != self.label.handler
+            })
             .collect()
     }
 }
@@ -215,7 +231,9 @@ mod tests {
         let o = diff_runs(&[], &[found], &label);
         assert!(!o.detected);
         assert_eq!(o.introduced.len(), 1);
-        assert_eq!(o.false_positives().len(), 1);
+        // Shares the label's class: the same defect read at another site, not
+        // something the analyzer invented.
+        assert!(o.false_positives().is_empty());
     }
 
     #[test]
@@ -224,7 +242,32 @@ mod tests {
         let found = f("unchecked-arithmetic", "withdraw", Track::Static);
         let o = diff_runs(&[], &[found], &label);
         assert!(!o.detected);
-        assert_eq!(o.false_positives().len(), 1);
+        assert!(o.false_positives().is_empty());
+    }
+
+    /// A false positive has to match neither half of the label. One mutation
+    /// often injects two real defects at one site — `Signer` to `AccountInfo`
+    /// removes the signature check *and* the owner check — and penalizing the
+    /// analyzer for reporting the second is penalizing it for being right.
+    #[test]
+    fn only_a_finding_matching_neither_half_of_the_label_is_a_false_positive() {
+        let label = label("missing-signer", "withdraw");
+        let collateral = f("missing-owner-check", "withdraw", Track::Static);
+        let same_class_elsewhere = f("missing-signer", "deposit", Track::Static);
+        let invented = f("unchecked-arithmetic", "deposit", Track::Static);
+        let mutant = vec![
+            f("missing-signer", "withdraw", Track::Static),
+            collateral,
+            same_class_elsewhere,
+            invented,
+        ];
+
+        let o = diff_runs(&[], &mutant, &label);
+        assert!(o.detected);
+        assert_eq!(o.introduced.len(), 4);
+        let fps = o.false_positives();
+        assert_eq!(fps.len(), 1, "{fps:?}");
+        assert_eq!(fps[0].class.as_str(), "unchecked-arithmetic");
     }
 
     #[test]

@@ -1,1 +1,168 @@
-[]
+[
+  {
+    "cases_rejected": 0,
+    "corpus_hash": null,
+    "model": null,
+    "noise": [
+      {
+        "findings": 0,
+        "loc": 162,
+        "per_kloc": 0.0,
+        "track": "static"
+      },
+      {
+        "findings": 0,
+        "loc": 162,
+        "per_kloc": 0.0,
+        "track": "llm"
+      },
+      {
+        "findings": 0,
+        "loc": 162,
+        "per_kloc": 0.0,
+        "track": "merged"
+      }
+    ],
+    "per_class": [
+      {
+        "class": "missing-authority-binding",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 3,
+        "track": "static",
+        "true_positives": 3
+      },
+      {
+        "class": "missing-authority-binding",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 3,
+        "track": "llm",
+        "true_positives": 0
+      },
+      {
+        "class": "missing-authority-binding",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 3,
+        "track": "merged",
+        "true_positives": 3
+      },
+      {
+        "class": "missing-owner-check",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 4,
+        "track": "static",
+        "true_positives": 4
+      },
+      {
+        "class": "missing-owner-check",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 4,
+        "track": "llm",
+        "true_positives": 0
+      },
+      {
+        "class": "missing-owner-check",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 4,
+        "track": "merged",
+        "true_positives": 4
+      },
+      {
+        "class": "missing-signer",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 3,
+        "track": "static",
+        "true_positives": 3
+      },
+      {
+        "class": "missing-signer",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 3,
+        "track": "llm",
+        "true_positives": 0
+      },
+      {
+        "class": "missing-signer",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 3,
+        "track": "merged",
+        "true_positives": 3
+      },
+      {
+        "class": "pda-validation-gap",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 4,
+        "track": "static",
+        "true_positives": 0
+      },
+      {
+        "class": "pda-validation-gap",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 4,
+        "track": "llm",
+        "true_positives": 0
+      },
+      {
+        "class": "pda-validation-gap",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 4,
+        "track": "merged",
+        "true_positives": 0
+      },
+      {
+        "class": "unchecked-arithmetic",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 2,
+        "track": "static",
+        "true_positives": 2
+      },
+      {
+        "class": "unchecked-arithmetic",
+        "false_positives": 0,
+        "precision": null,
+        "recall": 0.0,
+        "total_cases": 2,
+        "track": "llm",
+        "true_positives": 0
+      },
+      {
+        "class": "unchecked-arithmetic",
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "total_cases": 2,
+        "track": "merged",
+        "true_positives": 2
+      }
+    ],
+    "run_id": "2026-09-03T22:45:42.704913171+00:00-static",
+    "schema_version": 1,
+    "timestamp": "2026-09-03T22:45:42.704913171+00:00",
+    "tool_version": "0.1.0"
+  }
+]

@@ -1,0 +1,40 @@
+# The real holdout: published findings in real programs, mapped to the exact
+# commit that contained them.
+#
+# ---------------------------------------------------------------------------
+# THIS FILE IS DELIBERATELY EMPTY.
+# ---------------------------------------------------------------------------
+#
+# Every entry must come from a disclosure you have actually read, with a commit
+# hash you have actually resolved. An invented repository, hash or handler name
+# would be a fabricated record: it would look exactly like a real case, produce
+# a real-looking number, and there is no way to tell the difference from the
+# output. Populate this from verified sources or leave it empty — a holdout of
+# zero cases is honest, a holdout of plausible fiction is not.
+#
+# Two rules, both from the spec (§8), and both enforced by `dike eval holdout`:
+#
+#   1. This set is touched ONLY AT THE END. Iterating against it is tuning on
+#      the test set, and the number stops meaning anything the moment you do.
+#      `runs.json` records each scored run; a second run is refused.
+#
+#   2. Every report of holdout numbers must state the memorization caveat:
+#      famous bugs are plausibly in the model's pretraining data, so a Track 2
+#      hit here may be recall or may be recitation. The command prints this
+#      itself so it cannot be dropped from a summary downstream.
+#
+# Target size is 15–30 cases. Schema:
+#
+#   [[case]]
+#   id       = "short-stable-slug"          # names the case in every report
+#   repo     = "https://github.com/org/repo"
+#   commit   = "full 40-character hash"     # the commit that CONTAINED the bug
+#   path     = "programs/x/src/lib.rs"      # file the finding sits in
+#   handler  = "verify_signatures"          # instruction handler; the unit
+#                                           #   findings are compared at (D5)
+#   class    = "missing-owner-check"        # one of the classes in
+#                                           #   dike-lang-anchor/src/detectors/mod.rs,
+#                                           #   or the harness scores a correct
+#                                           #   report as a miss
+#   severity = "critical"                   # info | low | medium | high | critical
+#   source   = "https://…/disclosure"       # the published write-up

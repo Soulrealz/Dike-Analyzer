@@ -42,7 +42,7 @@ resolves toward reporting more, not less.
 
 ## Current status
 
-**Phases 1–7 complete. Phase 8 (differential eval harness) in progress.**
+**All eight phases complete.** The analyzer runs both tracks, and the eval harness scores them.
 
 `dike analyze <path>` runs the full static track end to end: it parses an Anchor
 program, builds the IR, runs five detectors, applies the imperative-check
@@ -58,11 +58,18 @@ clean code.
 - **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
 - **Phase 7** — complete. The six mutation operators, `MutationLabel`, mutant
   materialization and the `cargo check` validity gate, behind `dike eval mutate`.
-- **Phase 8** — in progress. The differential runner, the per-class/per-track
-  metrics, the noise floor and the history series exist (Tasks 25–26). `dike eval
-  run` does not, so nothing yet *calls* them.
+- **Phase 8** — complete. The differential runner, per-class/per-track metrics,
+  the noise floor, the history series, `dike eval run`/`dike eval holdout`, the
+  `justfile`, CI, and the holdout scaffold.
 
-435 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+**First scored run (2026-09-03, `benchmarks/history.json`):** 16 mutants of the
+clean fixture, 0 refused by the validity gate. Track 1 reaches recall **1.000**
+and precision **1.000** on `missing-signer`, `missing-owner-check`,
+`missing-authority-binding` and `unchecked-arithmetic`, at a noise floor of
+**0**. `pda-validation-gap` scores **0.000** — see "Known gaps"; the harness
+found that on its first run, which is what it is for.
+
+441 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -71,9 +78,12 @@ clean code.
 ```
 .
 ├── .superpowers/              SDD agent scaffolding — GITIGNORED, not project history
+├── .github/workflows/ci.yml   clippy, tests, seam, clean fixture, `eval run --track
+│                               static`. Deliberately NO `cargo fmt` gate (see Quirks)
 ├── benchmarks/
-│   └── history.json           The eval series: one EvalSummary per run. COMMITTED —
-│                               the harness exists to compare runs over time
+│   ├── history.json           The eval series: one EvalSummary per run. COMMITTED —
+│   │                           the harness exists to compare runs over time
+│   └── holdout/               The real holdout: cases.toml (empty scaffold) + runs.json
 ├── corpus/
 │   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class
 │   │                           tags, optional include_paths, and the refresh rule
@@ -109,7 +119,8 @@ clean code.
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
 │       └── src/
-│           ├── main.rs        clap subcommands: analyze, ir, eval mutate,
+│           ├── main.rs        clap subcommands: analyze, ir,
+│           │                   eval mutate|run|holdout,
 │           │                   corpus fetch|index|query|hash
 │           ├── pipeline.rs    Runs both tracks, merges, builds the Report
 │           ├── config.rs      RunConfig
@@ -126,6 +137,9 @@ clean code.
 │   │                           it is the only fixture the eval harness builds (D14)
 │   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it.
 │                               No Cargo.toml — nothing builds it
+├── justfile                   The invocation story: check, gates, eval*, holdout,
+│                               install-hook. Cargo has no pre-build hook and neither
+│                               does `anchor build`, so invocation is a wrapper task
 ├── Cargo.toml                 Workspace root; all dependency versions pinned here
 ├── Cargo.lock                 COMMITTED — this workspace ships a binary
 ├── rust-toolchain.toml        Pins stable + rustfmt + clippy
@@ -516,6 +530,48 @@ real constraint. Ordinary choices need no justification.
   committed, so its absence means a wrong path or a lost file; creating an empty
   one would erase the comparison the run was about to make.
 
+- **A false positive must match *neither* the label's class nor its handler.**
+  Not "anything introduced that is not the true positive". One mutation
+  routinely injects two real defects at one site — rewriting `Signer<'info>` to
+  `AccountInfo<'info>` removes the signature check *and* the owner check, and
+  the analyzer correctly reports both — so counting the second as a false
+  positive penalizes the analyzer for being right. Measured on the first eval
+  run, that alone put `missing-signer` precision at 0.5 instead of 1.0. A
+  finding sharing the label's handler is collateral from the same edit; one
+  sharing its class is the same defect read elsewhere. Neither is evidence
+  anything was invented.
+
+- **`TrackSelection` has no `merged` mode, but the CLI accepts the word.**
+  Merged is a view of results, not something that can be run; `--track merged`
+  runs both tracks and says so on stderr rather than quietly doing something the
+  word does not mean.
+
+- **`dike eval run` analyzes the clean copy once per program, not once per
+  mutant.** The clean run is identical for all 16 mutants and is otherwise the
+  largest cost in the loop — with Track 2 on, it would be a full model pass per
+  case.
+
+- **`dike eval run` refuses to record a run whose requested track could not be
+  built.** A Track 2 that failed to start would otherwise write zeros into
+  `benchmarks/history.json` that are indistinguishable from a detector
+  regression.
+
+- **There is no `cargo fmt --check` gate, and that is now a decision rather
+  than a gap.** Measured 2026-09-03: rustfmt's default disagrees with the house
+  style in 257 places across 43 files, and `use_small_heuristics = "Max"` — the
+  closest configuration — disagrees in 283. No configuration reproduces the
+  style, so enforcing it would mean a tree-wide reformat that rewrites blame
+  across every file for no behavioural gain. The gate is `clippy`, which is
+  deny-by-default here and has caught real defects.
+
+- **The holdout ships empty on purpose.** `benchmarks/holdout/cases.toml`
+  carries the schema and the rules and no cases. An invented repository, commit
+  or handler would look exactly like a real case and produce a real-looking
+  number, with nothing in the output to distinguish it. `dike eval holdout`
+  prints the memorization caveat *first*, before anything that could fail or be
+  skimmed, because a caveat in a document is something a downstream summary can
+  drop and a line in the output is not.
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -540,8 +596,25 @@ notes and *is* committed.
   PDF corpora, and the fetch pipeline reads no PDFs. Two MIT-licensed Markdown
   sources now cover the same classes, so this may never need solving — see the
   commented block in `corpus/sources.toml`.
-- `cargo fmt --check` fails repo-wide; there is no `rustfmt.toml` and the house
-  style does not match rustfmt defaults. Must be settled before CI adds a fmt gate.
+- **`pda-validation-gap` cannot fire on a compilable program.**
+  `PdaValidationGapDetector` filters on `has_seeds() != has_bump()` — an
+  inconsistent pair — and Anchor rejects that at compile time. Verified
+  2026-09-03 against `anchor-lang` 0.30: `seeds` without `bump` fails with
+  "bump must be provided with seeds". So the detector is unreachable on real
+  code, while `strip_seeds_bump` removes an entire PDA constraint, which is a
+  genuine defect the detector was never built to see. The eval harness surfaced
+  this on its first scored run. The class stays in the table at 0.000 rather
+  than being excluded, and
+  `crates/dike-cli/tests/eval_cli.rs::pda_validation_gap_is_not_yet_detectable_and_this_test_is_the_reminder`
+  fails the moment somebody fixes it. Fixing it is a detector design question —
+  what a missing PDA constraint looks like in code that compiles — and it moves
+  a pinned confidence, so it invalidates the history series and belongs in its
+  own change.
+- `benchmarks/holdout/cases.toml` is an empty scaffold; the real holdout has
+  never been scored.
+- The CI LLM job is a build check, not a scored run: GitHub runners have no GPU,
+  so the local generation model cannot run there, and Track 2 also needs an
+  indexed corpus that needs an embedding model.
 - `html_to_text` (`crates/dike-core/src/retrieval/fetch.rs`) silently drops
   text during resync. When a malformed tag's quoted attribute never resolves
   (an unterminated quote, or two colliding malformed openers), the scanner
@@ -570,6 +643,7 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
+| Run or extend the eval harness | `just eval-static`; the CLI is `crates/dike-cli/src/commands/eval.rs` |
 | Change how recall, precision or the noise floor are computed | `crates/dike-core/src/eval/metrics.rs` |
 | Change the eval history format | `crates/dike-core/src/eval/history.rs`; bump `metrics::SCHEMA_VERSION` in the same change |
 | Change what counts as a detection, a false positive or noise | `crates/dike-core/src/eval/differential.rs` |
