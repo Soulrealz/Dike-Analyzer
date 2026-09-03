@@ -9,6 +9,10 @@
 //! here names a language: the class is a free string, exactly as `VulnClass`
 //! is, for the same reason (D6).
 
+pub mod differential;
+
+pub use differential::{diff_runs, CaseOutcome};
+
 use crate::finding::Severity;
 use serde::{Deserialize, Serialize};
 use std::io;

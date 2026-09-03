@@ -42,7 +42,7 @@ resolves toward reporting more, not less.
 
 ## Current status
 
-**Phases 1–6 complete. Phase 7 (mutation engine) in progress.**
+**Phases 1–7 complete. Phase 8 (differential eval harness) in progress.**
 
 `dike analyze <path>` runs the full static track end to end: it parses an Anchor
 program, builds the IR, runs five detectors, applies the imperative-check
@@ -56,12 +56,12 @@ clean code.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
-- **Phase 7** — in progress. The six mutation operators, `MutationLabel`, mutant
-  materialization and the `cargo check` validity gate exist (Tasks 23–24), behind
-  `dike eval mutate`. The differential runner does not.
-- **Phase 8** — differential eval harness, metrics, `dike eval run`. Not started.
+- **Phase 7** — complete. The six mutation operators, `MutationLabel`, mutant
+  materialization and the `cargo check` validity gate, behind `dike eval mutate`.
+- **Phase 8** — in progress. The differential runner exists (Task 25); metrics, the
+  noise floor, history and `dike eval run` do not, so nothing yet *calls* it.
 
-394 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+418 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -84,7 +84,8 @@ clean code.
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
 │   │   │   ├── eval/         MutationLabel, Mutant, EvalCase; mutant materialization
-│   │   │   │                   and the `cargo check` validity gate (D14)
+│   │   │   │   │               and the `cargo check` validity gate (D14)
+│   │   │   │   └── differential.rs  original-vs-mutant diff: what the mutation caused
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -198,6 +199,7 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 13 | A mutant carries exactly one injected defect, labelled by the operator that made the edit | `mutations::operators` — one mutant per site, and `MutationLabel` is built at the edit, never inferred |
 | 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs` |
 | 15 | A mutant that does not compile is never scored (D14) | `eval::compile_gate`; `dike eval mutate` moves a rejected case to `rejected/` and records the compiler's own reason |
+| 16 | A finding the analyzer already made on the clean program is never scored as a detection | `eval::differential::diff_runs` — it is `persistent`, the noise floor, attributable to neither side (spec §8) |
 
 ---
 
@@ -451,6 +453,29 @@ real constraint. Ordinary choices need no justification.
   attribution goes to the first handler by name, because `Program::instructions`
   is sorted and parse order is not (invariant 5).
 
+- **The differential key is `(handler, class)` — deliberately not
+  `Finding::merge_key`.** `merge_key` is `(handler_id, class)` and `handler_id`
+  carries the file path. The two runs being compared are two *copies* of one
+  program in two directories, and the label names a third path (the repository
+  fixture the operator read), so no two of the three ever agree on a path.
+  Keying on it would make every mutant finding look introduced, every persistent
+  finding invisible, and every label unmatched — the harness would report 0%
+  recall and 100% noise with nothing actually wrong. Dropping the file is safe
+  because a handler name identifies an instruction uniquely within a program,
+  which is the granularity findings are already compared at (D5).
+
+- **`diff_runs` takes the *unmerged* per-track findings.** Merging first
+  collapses a static and an LLM finding on the same handler and class into one
+  corroborated finding, which destroys exactly the per-track attribution the
+  two-track design exists to produce: the harness has to be able to say Track 1
+  caught something Track 2 missed.
+
+- **`CaseOutcome::introduced` includes the true positive; `false_positives()` is
+  the subset that does not match the label.** Keeping the matching findings in
+  the list preserves their evidence and confidence for a per-case report; a
+  boolean `detected` alone would throw that away, and Task 26 needs both counts
+  out of the same structure.
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -505,6 +530,7 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
+| Change what counts as a detection, a false positive or noise | `crates/dike-core/src/eval/differential.rs` |
 | Materialize or validate mutants | `crates/dike-core/src/eval/` — `materialize`, `compile_gate`, `reject`; the CLI wiring is `crates/dike-cli/src/commands/eval.rs` |
 | Add or change a mutation operator | `crates/dike-lang-anchor/src/mutations/operators.rs` — implement `MutationOperator`, register in `all_operators()`; the shared text surgery is in `mutations/mod.rs` |
 | Change what ground truth the eval harness gets | `crates/dike-core/src/eval/` — `MutationLabel` |
