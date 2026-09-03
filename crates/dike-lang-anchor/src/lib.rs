@@ -2,6 +2,7 @@ pub mod chunker;
 pub mod detectors;
 pub mod llm_analyzer;
 pub mod ir;
+pub mod mutations;
 pub mod parser;
 
 use dike_core::analyzer::{

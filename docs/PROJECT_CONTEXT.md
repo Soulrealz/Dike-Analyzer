@@ -42,7 +42,7 @@ resolves toward reporting more, not less.
 
 ## Current status
 
-**Phases 1–4 complete. Phase 5 (Retrieval) in progress.**
+**Phases 1–6 complete. Phase 7 (mutation engine) in progress.**
 
 `dike analyze <path>` runs the full static track end to end: it parses an Anchor
 program, builds the IR, runs five detectors, applies the imperative-check
@@ -56,9 +56,11 @@ clean code.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
-- **Phases 7–8** — mutation engine, differential eval harness. Not started.
+- **Phase 7** — in progress. The six mutation operators and `MutationLabel` exist
+  (Task 23); materialization, the compile gate and the differential runner do not.
+- **Phase 8** — differential eval harness, metrics, `dike eval run`. Not started.
 
-369 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+394 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -80,6 +82,7 @@ clean code.
 │   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
+│   │   │   ├── eval/         MutationLabel — ground truth for the eval harness
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -92,6 +95,7 @@ clean code.
 │   │   │   ├── chunker/       HandlerUnit chunking + derived retrieval queries
 │   │   │   ├── detectors/     Five static detectors + the suppression pass
 │   │   │   ├── llm_analyzer/  Track 2 assembled: chunk, retrieve, ask, validate
+│   │   │   ├── mutations/     The six vulnerability-injection operators (Phase 7)
 │   │   │   └── lib.rs         AnchorAnalyzer, analyze_program
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
@@ -102,6 +106,8 @@ clean code.
 │           └── commands/      analyze, ir, corpus
 ├── docs/
 │   ├── PROJECT_CONTEXT.md     This file
+│   ├── next_steps_2.md        Current handoff: what is left, rules, live findings
+│   ├── next_steps.md          Superseded handoff (Phase 5–6 archaeology)
 │   └── superpowers/
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
@@ -184,6 +190,8 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 10 | A vector search across a model/dimension mismatch refuses rather than scoring | `StoreError::ModelMismatch`; the store's `meta` table records `(model, dim)` |
 | 11 | An unavailable embedder degrades retrieval to sparse-only; it never empties it | `HybridRetriever::dense_leg` returns `None` on `HttpError`, and two tests cover the build-time and query-time paths separately |
 | 12 | `RetrievalHit::dense_score` is `None` only when the dense leg did not run | `HybridRetriever::search` backfills via `VectorStore::scores_for`; the grounding gate reads this distinction |
+| 13 | A mutant carries exactly one injected defect, labelled by the operator that made the edit | `mutations::operators` — one mutant per site, and `MutationLabel` is built at the edit, never inferred |
+| 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs`; Task 24's compile gate will make this binding |
 
 ---
 
@@ -361,6 +369,41 @@ real constraint. Ordinary choices need no justification.
   program — the sole exception is the mutation-validity gate in the future eval
   harness, which runs against eval fixtures.
 
+- **A mutation operator skips a site where its own rewrite would not compile.**
+  `account_to_unchecked` passes over an account carrying `init`, `close`,
+  `has_one`, or a `seeds`/`bump` expression that reads the field's own data —
+  all four are defined against the deserialized type. A mutant Anchor rejects is
+  not a hard case for the analyzer, it is one the harness never gets to score,
+  and it would be dropped by Task 24's compile gate anyway; the cheaper place to
+  know that is at the operator, where the reason is visible.
+
+- **The two wrapper operators insert a `/// CHECK:` doc comment.** Anchor
+  refuses to compile an unvalidated field without one, so `Signer<'info>` ->
+  `AccountInfo<'info>` and `Account<'info, T>` -> `UncheckedAccount<'info>`
+  would otherwise produce nothing scoreable at all. This is why the diff-size
+  guard admits two changed lines rather than one. The comment goes directly
+  above the field, after any `#[account(...)]`, so the first line that differs
+  from the clean program is still the line the label points at.
+
+- **Deleting an attribute item takes the comma *after* it, never the one
+  before.** Reaching backwards is what a last item appears to need, but on a
+  one-item-per-line attribute that crosses a newline and merges two surviving
+  lines into one — three lines of diff for a one-item deletion. A trailing comma
+  before `)` is legal Rust, so the last item leaves one behind and
+  `tidy_inline_attr` removes it only in the single-line case, where it is merely
+  ugly rather than wrong.
+
+- **A mutation label's line comes from diffing the file, not from the IR site.**
+  The two agree for a plain single-line edit and diverge everywhere else — an
+  inserted `/// CHECK:` line, an item deleted from a multi-line attribute. The
+  label is what an auditor opens the file at when the harness scores a miss, so
+  it points at what actually changed.
+
+- **An `#[derive(Accounts)]` struct shared by two handlers is one mutation
+  site.** It is declared once, so mutating it once is the honest count;
+  attribution goes to the first handler by name, because `Program::instructions`
+  is sorted and parse order is not (invariant 5).
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -415,6 +458,8 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
+| Add or change a mutation operator | `crates/dike-lang-anchor/src/mutations/operators.rs` — implement `MutationOperator`, register in `all_operators()`; the shared text surgery is in `mutations/mod.rs` |
+| Change what ground truth the eval harness gets | `crates/dike-core/src/eval/` — `MutationLabel` |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
 | Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
 | Swap the generation model or backend | `crates/dike-core/src/llm/` — implement `LlmClient`, or pass a different model string; the pipeline holds a `Box<dyn LlmClient>` |
