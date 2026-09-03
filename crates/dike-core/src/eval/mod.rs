@@ -10,8 +10,14 @@
 //! is, for the same reason (D6).
 
 pub mod differential;
+pub mod history;
+pub mod metrics;
 
 pub use differential::{diff_runs, CaseOutcome};
+pub use history::{append_history, read_history};
+pub use metrics::{
+    render_table, summarize, ClassMetrics, EvalSummary, MetricTrack, NoiseFloor, SCHEMA_VERSION,
+};
 
 use crate::finding::Severity;
 use serde::{Deserialize, Serialize};

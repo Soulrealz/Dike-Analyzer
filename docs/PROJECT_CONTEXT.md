@@ -58,10 +58,11 @@ clean code.
 - **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
 - **Phase 7** — complete. The six mutation operators, `MutationLabel`, mutant
   materialization and the `cargo check` validity gate, behind `dike eval mutate`.
-- **Phase 8** — in progress. The differential runner exists (Task 25); metrics, the
-  noise floor, history and `dike eval run` do not, so nothing yet *calls* it.
+- **Phase 8** — in progress. The differential runner, the per-class/per-track
+  metrics, the noise floor and the history series exist (Tasks 25–26). `dike eval
+  run` does not, so nothing yet *calls* them.
 
-418 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+435 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -70,6 +71,9 @@ clean code.
 ```
 .
 ├── .superpowers/              SDD agent scaffolding — GITIGNORED, not project history
+├── benchmarks/
+│   └── history.json           The eval series: one EvalSummary per run. COMMITTED —
+│                               the harness exists to compare runs over time
 ├── corpus/
 │   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class
 │   │                           tags, optional include_paths, and the refresh rule
@@ -85,7 +89,9 @@ clean code.
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
 │   │   │   ├── eval/         MutationLabel, Mutant, EvalCase; mutant materialization
 │   │   │   │   │               and the `cargo check` validity gate (D14)
-│   │   │   │   └── differential.rs  original-vs-mutant diff: what the mutation caused
+│   │   │   │   ├── differential.rs  original-vs-mutant diff: what the mutation caused
+│   │   │   │   ├── metrics.rs   per-class, per-track recall/precision + noise floor
+│   │   │   │   └── history.rs   append-only run series (benchmarks/history.json)
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -200,6 +206,7 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs` |
 | 15 | A mutant that does not compile is never scored (D14) | `eval::compile_gate`; `dike eval mutate` moves a rejected case to `rejected/` and records the compiler's own reason |
 | 16 | A finding the analyzer already made on the clean program is never scored as a detection | `eval::differential::diff_runs` — it is `persistent`, the noise floor, attributable to neither side (spec §8) |
+| 17 | The eval history is append-only and written atomically | `eval::history::append_history` — temp file + rename, and a missing file is an error, never a fresh series |
 
 ---
 
@@ -476,6 +483,39 @@ real constraint. Ordinary choices need no justification.
   boolean `detected` alone would throw that away, and Task 26 needs both counts
   out of the same structure.
 
+- **`MetricTrack` is not `Track`.** The three views the spec asks for are
+  static, LLM and **merged**, and merged is the *union* — what the tool as a
+  whole shows an auditor, so its recall is at least each single track's.
+  `Track`'s third variant is `Corroborated`, the *intersection*, whose recall is
+  at most each track's. Reusing it would print `"track": "corroborated"` in
+  `history.json` against a number meaning the opposite of what that word means
+  everywhere else in the codebase — a misreading nobody would catch from the
+  file.
+
+- **The noise floor is deduplicated across cases, never summed.** Every case's
+  `persistent` list is drawn from the same clean-program run, so summing them
+  multiplies the floor by the number of mutants and reports a property of the
+  harness as a property of the analyzer. Dedupe is on the same `(handler, class)`
+  key the differential runner compares on.
+
+- **`ClassMetrics::precision` is `Option<f32>` and renders as `-`.** Same rule
+  as a missing retrieval component score: "it reported nothing" and "everything
+  it reported was wrong" are different claims, and `0.000` states the second.
+  Recall is always defined, because a row exists only because a case produced it.
+
+- **`summarize` leaves `run_id`, `timestamp`, `model`, `corpus_hash` and
+  `cases_rejected` for the caller.** `dike-core` stays free of the clock, the
+  same split that already has `RunMetadata::timestamp` filled in
+  `dike-cli/src/pipeline.rs` rather than in core.
+
+- **`EvalSummary` carries `cases_rejected`.** A validity gate that starts
+  refusing mutants shrinks the denominator, and a shrinking denominator looks
+  exactly like improving recall. The count travels with the numbers it explains.
+
+- **`append_history` refuses a missing file.** `benchmarks/history.json` is
+  committed, so its absence means a wrong path or a lost file; creating an empty
+  one would erase the comparison the run was about to make.
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -530,6 +570,8 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
+| Change how recall, precision or the noise floor are computed | `crates/dike-core/src/eval/metrics.rs` |
+| Change the eval history format | `crates/dike-core/src/eval/history.rs`; bump `metrics::SCHEMA_VERSION` in the same change |
 | Change what counts as a detection, a false positive or noise | `crates/dike-core/src/eval/differential.rs` |
 | Materialize or validate mutants | `crates/dike-core/src/eval/` — `materialize`, `compile_gate`, `reject`; the CLI wiring is `crates/dike-cli/src/commands/eval.rs` |
 | Add or change a mutation operator | `crates/dike-lang-anchor/src/mutations/operators.rs` — implement `MutationOperator`, register in `all_operators()`; the shared text surgery is in `mutations/mod.rs` |
