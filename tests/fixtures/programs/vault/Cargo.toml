@@ -1,0 +1,20 @@
+# This fixture is a real, buildable crate for exactly one reason: the eval
+# harness's mutation-validity gate (D14) runs `cargo check` over every mutant,
+# and a mutant that no longer compiles is not a vulnerable program but a broken
+# one. The analyzer itself never builds it — `SourceTree::load` reads `.rs`
+# files as text and nothing else.
+#
+# The empty `[workspace]` table below detaches this crate from the workspace at
+# the repository root, so `cargo test` and `cargo clippy --workspace` never
+# build it and never pull its dependency tree.
+
+[package]
+name = "vault"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anchor-lang = "0.30"
+anchor-spl = "0.30"
+
+[workspace]

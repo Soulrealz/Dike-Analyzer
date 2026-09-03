@@ -39,10 +39,34 @@ enum Command {
     },
     /// Debug: parse a program directory and print its IR as JSON.
     Ir { path: std::path::PathBuf },
+    /// Build and validate the mutant corpus the eval harness scores against.
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommand,
+    },
     /// Manage the retrieval corpus (fetch, index, query, hash).
     Corpus {
         #[command(subcommand)]
         command: CorpusCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvalCommand {
+    /// Inject one vulnerability per site into a clean program and write one
+    /// case directory per mutant.
+    Mutate {
+        /// A clean program: a mutation applied to already-broken code cannot
+        /// be attributed.
+        program: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Skip `cargo check` on each mutant. A mutant that no longer compiles
+        /// is not a vulnerable program but a broken one, and a finding on it
+        /// counts as a true positive and inflates recall (D14) — so this is for
+        /// iterating on operators, never for producing numbers.
+        #[arg(long)]
+        no_compile_check: bool,
     },
 }
 
@@ -114,6 +138,11 @@ fn main() -> std::process::ExitCode {
             top_k,
         }),
         Command::Ir { path } => commands::ir::run(path),
+        Command::Eval { command } => match command {
+            EvalCommand::Mutate { program, out, no_compile_check } => {
+                commands::eval::mutate(program, out, no_compile_check)
+            }
+        },
         Command::Corpus { command } => match command {
             CorpusCommand::Fetch { update_hashes, verify } => {
                 commands::corpus::fetch(update_hashes, verify)

@@ -56,8 +56,9 @@ clean code.
 - **Phase 4** — `AnchorAnalyzer` wired into the pipeline; coverage reporting.
 - **Phase 5** — complete: corpus document model, manifest, chunking, hashing; HTTP layer and `dike corpus fetch`; BM25 sparse index; embedder + sqlite vector store; RRF fusion and the `Retrieve` seam; the `dike corpus index|query|hash` CLI. The first *live* run (fetch, then index against Ollama) has not happened yet.
 - **Phase 6** — complete. `dike analyze --llm` runs both tracks and is verified end to end against a live model: on the vulnerable fixture Track 2 independently reports `missing-signer` on `withdraw`, which merges with Track 1's finding into a **corroborated** Critical at confidence 0.97 carrying its citation link.
-- **Phase 7** — in progress. The six mutation operators and `MutationLabel` exist
-  (Task 23); materialization, the compile gate and the differential runner do not.
+- **Phase 7** — in progress. The six mutation operators, `MutationLabel`, mutant
+  materialization and the `cargo check` validity gate exist (Tasks 23–24), behind
+  `dike eval mutate`. The differential runner does not.
 - **Phase 8** — differential eval harness, metrics, `dike eval run`. Not started.
 
 394 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
@@ -82,7 +83,8 @@ clean code.
 │   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
-│   │   │   ├── eval/         MutationLabel — ground truth for the eval harness
+│   │   │   ├── eval/         MutationLabel, Mutant, EvalCase; mutant materialization
+│   │   │   │                   and the `cargo check` validity gate (D14)
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
@@ -100,7 +102,8 @@ clean code.
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
 │       └── src/
-│           ├── main.rs        clap subcommands: analyze, ir, corpus fetch|index|query|hash
+│           ├── main.rs        clap subcommands: analyze, ir, eval mutate,
+│           │                   corpus fetch|index|query|hash
 │           ├── pipeline.rs    Runs both tracks, merges, builds the Report
 │           ├── config.rs      RunConfig
 │           └── commands/      analyze, ir, corpus
@@ -111,9 +114,11 @@ clean code.
 │   └── superpowers/
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
-├── tests/fixtures/programs/   Anchor fixture programs (deliberately NO Cargo.toml —
-│   ├── vault/                 they are parsed as text, never built)
-│   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it
+├── tests/fixtures/programs/   Anchor fixture programs, parsed as text
+│   ├── vault/                 the clean one, and the mutation source. HAS a Cargo.toml:
+│   │                           it is the only fixture the eval harness builds (D14)
+│   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it.
+│                               No Cargo.toml — nothing builds it
 ├── Cargo.toml                 Workspace root; all dependency versions pinned here
 ├── Cargo.lock                 COMMITTED — this workspace ships a binary
 ├── rust-toolchain.toml        Pins stable + rustfmt + clippy
@@ -191,7 +196,8 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 11 | An unavailable embedder degrades retrieval to sparse-only; it never empties it | `HybridRetriever::dense_leg` returns `None` on `HttpError`, and two tests cover the build-time and query-time paths separately |
 | 12 | `RetrievalHit::dense_score` is `None` only when the dense leg did not run | `HybridRetriever::search` backfills via `VectorStore::scores_for`; the grounding gate reads this distinction |
 | 13 | A mutant carries exactly one injected defect, labelled by the operator that made the edit | `mutations::operators` — one mutant per site, and `MutationLabel` is built at the edit, never inferred |
-| 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs`; Task 24's compile gate will make this binding |
+| 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs` |
+| 15 | A mutant that does not compile is never scored (D14) | `eval::compile_gate`; `dike eval mutate` moves a rejected case to `rejected/` and records the compiler's own reason |
 
 ---
 
@@ -364,10 +370,51 @@ real constraint. Ordinary choices need no justification.
   source entries and the prose explaining them. The rewrite scopes by the
   preceding `id = "…"` line and writes atomically (temp file + rename).
 
-- **Fixture Anchor programs have no `Cargo.toml`.** They are parsed as text and
-  must never be built. The analyzer never invokes `cargo` or `anchor` on a target
-  program — the sole exception is the mutation-validity gate in the future eval
-  harness, which runs against eval fixtures.
+- **`tests/fixtures/programs/vault` is a real crate; `leaky_vault` is not.**
+  Reverses the earlier "fixture programs have no `Cargo.toml`" decision, for the
+  exception that decision already anticipated: the mutation-validity gate (D14)
+  runs `cargo check` over every mutant, and it needs something buildable. The
+  alternative — a second, buildable copy of the same program under a separate
+  eval fixture directory — was rejected because the two copies drift, and an
+  operator developed against one would then be validated against the other. An
+  empty `[workspace]` table in the manifest detaches it from the root workspace,
+  so `cargo test` and `cargo clippy --workspace` never build it. The analyzer
+  still never builds a target program: `SourceTree::load` reads `.rs` as text,
+  and `cargo` is invoked only by the eval harness, only on this fixture.
+
+- **The `declare_id!` in a fixture has to be a real 32-byte key.** The clean
+  fixture carried `Vau1t1111…` (30 bytes) from the day it was written; nothing
+  noticed, because until the validity gate existed nothing ever compiled it. It
+  is now the standard placeholder. This is the first thing D14 caught, and it
+  caught it in the fixture rather than in a mutant — which is the argument for
+  the gate in miniature.
+
+- **`compile_gate` takes a shared `CARGO_TARGET_DIR`**, a deviation from the
+  plan's one-argument signature. Every case is a copy of the same crate with the
+  same dependency graph; pointing them all at one target directory builds that
+  graph once instead of once per mutant. With 16 cases and a Solana dependency
+  tree, that is the difference between a gate that runs and one nobody waits for.
+
+- **The compiler's output goes to a file, not a pipe.** A pipe whose buffer
+  fills blocks the child, and the child is what is being polled for the timeout —
+  so the two would deadlock on exactly the verbose failures worth reading.
+
+- **`materialize` refuses to clear a directory it did not create.** It writes a
+  `.dike-eval` marker and requires it before removing anything, because `--out`
+  is a user-supplied path and a typo would otherwise recursively delete
+  somebody's source tree.
+
+- **A rejected mutant is moved, not deleted.** `cases/` holds what is scoreable
+  and `rejected/` holds what is not, so iterating the case set never has to
+  consult a manifest to skip a broken one — while the broken tree is still on
+  disk to be read. A compile failure is a defect in an *operator*, and deleting
+  the evidence is how it stays undiagnosed.
+
+- **`rejected.json` is absent when the gate did not run, rather than empty.**
+  `--no-compile-check` writes no file at all. An empty list would claim every
+  case was checked and passed, which is the opposite of what happened — the same
+  reasoning that makes an absent `corpus/cache/` this project's evidence that no
+  fetch has run.
 
 - **A mutation operator skips a site where its own rewrite would not compile.**
   `account_to_unchecked` passes over an account carrying `init`, `close`,
@@ -458,6 +505,7 @@ notes and *is* committed.
 | Change how findings are ranked or merged | `crates/dike-core/src/merge.rs` |
 | Change the report | `crates/dike-core/src/report/` |
 | Change what Track 2 sees per handler | `crates/dike-lang-anchor/src/chunker.rs` — the unit's source and its derived query |
+| Materialize or validate mutants | `crates/dike-core/src/eval/` — `materialize`, `compile_gate`, `reject`; the CLI wiring is `crates/dike-cli/src/commands/eval.rs` |
 | Add or change a mutation operator | `crates/dike-lang-anchor/src/mutations/operators.rs` — implement `MutationOperator`, register in `all_operators()`; the shared text surgery is in `mutations/mod.rs` |
 | Change what ground truth the eval harness gets | `crates/dike-core/src/eval/` — `MutationLabel` |
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |

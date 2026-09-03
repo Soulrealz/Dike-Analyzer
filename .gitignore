@@ -1,6 +1,11 @@
 # ---- Build artifacts ----------------------------------------------------
 /target
 **/*.rs.bk
+# The vault fixture is a real crate (the eval harness's mutation-validity gate
+# runs `cargo check` over every mutant of it). Its build output is not ours to
+# commit; its Cargo.lock is, so the gate resolves the same dependency tree in
+# CI as it does locally.
+/tests/fixtures/programs/*/target
 
 # ---- Secrets ------------------------------------------------------------
 # GEMINI_API_KEY is read from the environment (crates/dike-core/src/llm/).

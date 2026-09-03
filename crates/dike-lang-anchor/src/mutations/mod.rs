@@ -25,24 +25,14 @@ use dike_core::eval::MutationLabel;
 use dike_core::finding::Severity;
 use std::collections::BTreeSet;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use operators::{
     AccountToUnchecked, CheckedToBare, SignerToAccountInfo, StripConstraint, StripHasOne,
     StripSeedsBump,
 };
 
-/// One clean program plus one injected defect.
-///
-/// `files` carries only the files the operator actually rewrote, as
-/// `(path, full new text)`. Materialization (Task 24) copies the tree and
-/// overwrites exactly these — an untouched file is not carried, so a mutant
-/// stays small regardless of program size.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Mutant {
-    pub label: MutationLabel,
-    pub files: Vec<(PathBuf, String)>,
-}
+pub use dike_core::eval::Mutant;
 
 pub trait MutationOperator {
     fn name(&self) -> &'static str;
