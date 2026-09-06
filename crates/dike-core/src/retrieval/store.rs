@@ -228,9 +228,10 @@ fn encode(v: &[f32]) -> Vec<u8> {
 }
 
 fn decode(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    // `as_chunks` drops a trailing partial chunk exactly as `chunks_exact`
+    // did: a truncated blob decodes to the vectors that survived it whole,
+    // never to a garbage final component.
+    b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
 /// Cosine similarity, guarding a zero norm to `0.0` rather than `NaN`.

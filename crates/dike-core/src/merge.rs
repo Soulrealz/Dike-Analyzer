@@ -35,7 +35,7 @@ pub fn corroborate(a: &Finding, b: &Finding) -> Finding {
 pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<Finding> {
     let mut by_key: BTreeMap<(String, VulnClass), Finding> = BTreeMap::new();
 
-    for f in static_findings.into_iter().chain(llm_findings.into_iter()) {
+    for f in static_findings.into_iter().chain(llm_findings) {
         match by_key.remove(&f.merge_key()) {
             None => {
                 by_key.insert(f.merge_key(), f);
