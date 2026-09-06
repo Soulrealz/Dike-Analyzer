@@ -12,6 +12,9 @@ syn.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
 blake3.workspace = true
+# Diagnosis only. Track 2's failures are invisible without it: an empty
+# answer and a unit handed irrelevant documents look identical otherwise.
+tracing.workspace = true
 
 [dev-dependencies]
 # The `Retrieve` trait returns `anyhow::Result`, so a stub retriever in a

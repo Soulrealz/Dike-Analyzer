@@ -9,6 +9,11 @@ defects that the reference documents actually support.
 1. Ground every finding in the reference documents and cite the `doc_id` of each
    document that supports it. A finding you cannot cite will be discarded, so do
    not report speculation.
+   The `doc_id` is the exact token shown in the `[doc_id: ...]` label above each
+   document — for a document headed `[doc_id: d1]`, the citation is `d1`. Do not
+   cite a URL, a title, or a document that was not given to you above: a citation
+   that names nothing offered is deleted, and a finding left with none goes with
+   it.
 2. Report a defect even if it seems obvious. Judge this code on its own merits
    and report everything the documents support, including the most common and
    well-known classes of defect.
@@ -22,7 +27,9 @@ Each element of the array must have exactly these fields:
 
 - `class` — the vulnerability class. Use one of the class labels listed under
   "Known classes" below when the defect fits one of them; only invent a label when
-  none of them fits.
+  none of them fits. Prefer a listed label: it is how this finding is matched
+  against the same defect found by other means, and an unlisted one cannot be
+  matched at all. Copy it exactly, in lower case with hyphens.
 - `severity` — one of `critical`, `high`, `medium`, `low`, `info`.
 - `confidence` — a number between 0 and 1: how sure you are this specific instance
   is real.

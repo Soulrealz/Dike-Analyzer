@@ -274,15 +274,35 @@ pub fn validate_citations(
     offered: &[RetrievalHit],
     file: &Path,
 ) -> Option<Finding> {
+    // Resolve each citation to an offered document, then dedupe on the
+    // DOCUMENT, not on the string the model wrote.
+    //
+    // Resolution is tolerant, D12 is not. The rule that matters is "the
+    // citation must name a document that was actually offered"; it says
+    // nothing about which of that document's identifiers the model must use.
+    // The prompt shows an id and a title, the document text is full of URLs,
+    // and a model reaches for whichever it remembers — measured 2026-09-06,
+    // Track 2's one finding on `leaky_vault` cited a URL and was discarded
+    // while being correctly grounded. Accepting any identifier OF AN OFFERED
+    // DOCUMENT cannot admit a hallucination: an invented URL matches no
+    // offered document and still resolves to nothing.
+    //
+    // Deduping on the document rather than the string is what keeps the
+    // tolerance honest. `track2_confidence` reads the citation count, so
+    // "d1" plus "https://…/d1" would otherwise buy the two-citation
+    // up-weighting for a single source.
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let citations: Vec<Citation> = f
         .citations
         .iter()
-        // A duplicate must not inflate confidence: `track2_confidence`
-        // reads the count, so citing one document twice would otherwise
-        // buy the same up-weighting as citing two.
-        .filter(|id| seen.insert(id.as_str()))
-        .filter_map(|id| offered.iter().find(|h| &h.document.id == id))
+        .filter_map(|name| {
+            offered.iter().find(|h| {
+                h.document.id == *name
+                    || h.document.source_url == *name
+                    || h.document.title == *name
+            })
+        })
+        .filter(|hit| seen.insert(hit.document.id.as_str()))
         .map(|hit| Citation {
             doc_id: hit.document.id.clone(),
             source_url: hit.document.source_url.clone(),
@@ -647,6 +667,63 @@ That is all."#;
     }
 
     // --- citation validation ---------------------------------------------
+
+    /// Measured 2026-09-06 on `leaky_vault`: the one finding Track 2 produced
+    /// cited `https://docs.solana.com/...` instead of the `doc_id` it was
+    /// shown, and D12 dropped it. The grounding rule is "the citation must
+    /// name a document that was actually offered" — naming it by its URL is
+    /// still naming it, and discarding a correctly grounded finding over the
+    /// spelling of the identifier is a false negative (Rule 3).
+    #[test]
+    fn a_citation_naming_an_offered_document_by_url_is_accepted() {
+        let offered = vec![hit_with_id("d1")];
+        let f = raw_finding(vec!["https://example.invalid/d1".into()]);
+        let kept = validate_citations(f, &offered, &file()).expect("grounded in an offered doc");
+        assert_eq!(kept.citations[0].doc_id, "d1", "it resolves to the document, not the string");
+    }
+
+    /// The prompt shows each document's title next to its id, so a title is
+    /// the other identifier the model can see and therefore the other one it
+    /// reaches for.
+    #[test]
+    fn a_citation_naming_an_offered_document_by_title_is_accepted() {
+        let offered = vec![hit_with_id("d1")];
+        let f = raw_finding(vec!["document d1".into()]);
+        let kept = validate_citations(f, &offered, &file()).expect("grounded in an offered doc");
+        assert_eq!(kept.citations[0].doc_id, "d1");
+    }
+
+    /// The tolerance must not become a confidence exploit. `track2_confidence`
+    /// reads the citation COUNT, so one document named twice under two of its
+    /// own identifiers has to collapse to one citation — otherwise accepting
+    /// URLs quietly buys the two-citation up-weighting for a single source.
+    /// Deduping on the raw string cannot see this; it dedupes on the document.
+    #[test]
+    fn one_document_named_two_ways_is_still_one_citation() {
+        let offered = vec![hit_with_id("d1")];
+        let f = raw_finding(vec!["d1".into(), "https://example.invalid/d1".into()]);
+        let kept = validate_citations(f, &offered, &file()).expect("grounded");
+        assert_eq!(
+            kept.citations.len(),
+            1,
+            "the same document under two names must not count twice: {:?}",
+            kept.citations
+        );
+    }
+
+    /// The guarantee D12 actually makes, unchanged by the tolerance: a
+    /// citation naming something that was never offered is deleted, whatever
+    /// it looks like. A plausible URL is exactly what a hallucination looks
+    /// like, so this is the case that must stay strict.
+    #[test]
+    fn a_plausible_but_unoffered_url_is_still_hallucinated() {
+        let offered = vec![hit_with_id("d1")];
+        let f = raw_finding(vec!["https://example.invalid/d99".into()]);
+        assert!(
+            validate_citations(f, &offered, &file()).is_none(),
+            "a URL that names no offered document grounds nothing"
+        );
+    }
 
     #[test]
     fn hallucinated_citations_are_stripped_and_uncited_findings_dropped() {

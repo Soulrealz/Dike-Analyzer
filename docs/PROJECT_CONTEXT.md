@@ -114,7 +114,7 @@ cited a **URL** rather than an offered `doc_id`, so the grounding filter (D12)
 correctly dropped it. Retrieval and citation discipline, not output format, are
 where Track 2 is losing.
 
-451 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+455 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -172,9 +172,6 @@ where Track 2 is losing.
 │           └── commands/      analyze, ir, corpus
 ├── docs/
 │   ├── PROJECT_CONTEXT.md     This file
-│   ├── next_steps_3.md        Current handoff: what is left, rules, live findings
-│   ├── next_steps_2.md        Superseded handoff (Phase 7 archaeology)
-│   ├── next_steps.md          Superseded handoff (Phase 5–6 archaeology)
 │   └── superpowers/
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
@@ -620,6 +617,20 @@ real constraint. Ordinary choices need no justification.
   skimmed, because a caveat in a document is something a downstream summary can
   drop and a line in the output is not.
 
+- **CI's clippy is ahead of the local one, so `-D warnings` can pass here and
+  fail there.** `rust-toolchain.toml` says `channel = "stable"`, which resolves
+  to whatever stable the machine last installed — 1.93 here — while
+  `dtolnay/rust-toolchain@stable` in CI fetches the current one. On 2026-09-06
+  that gap was five releases and it broke the build on two lints that no local
+  toolchain could even name: `useless_conversion` on
+  `.chain(llm_findings.into_iter())` and `chunks_exact_to_as_chunks` on
+  `b.chunks_exact(4)`. Local nightly (1.95) did not know them either —
+  `cargo clippy --explain clippy::chunks_exact_to_as_chunks` answered "unknown
+  lint", which is the quickest way to tell "my clippy agrees" from "my clippy
+  has never heard of this". **A green local clippy is therefore not evidence CI
+  is green.** Either `rustup update` before trusting the gate, or read the CI
+  log as the authority.
+
 - **`LlmRequest` carries a JSON Schema, and the backends spell it differently.**
   A prompt cannot make a model emit a shape. Measured 2026-09-06: with
   "Return ONLY a JSON array. No prose before or after it, no code fences." in
@@ -749,13 +760,44 @@ notes and *is* committed.
   what a missing PDA constraint looks like in code that compiles — and it moves
   a pinned confidence, so it invalidates the history series and belongs in its
   own change.
+- **Retrieval, not the model, is why Track 2 is silent — measured, not
+  suspected.** Logged 2026-09-06 (`RUST_LOG=dike_lang_anchor=debug`) over
+  `leaky_vault`, whose four handlers include a blatant unsigned authority:
+
+  | handler | top hits |
+  |---|---|
+  | `deposit` | `anchor-constraints#3` "#[account(mut)]", `solana-security-standard#104`, `neodyme-pitfalls#14` "Example" |
+  | `initialize` | `anchor-constraints#3`, `neodyme-pitfalls#14` "Example", `anchor-constraints#24` "On this page" |
+  | `set_admin` | `anchor-constraints#3`, `neodyme-pitfalls#14` "Example", `anchor-constraints#24` "On this page" |
+  | `withdraw` | `neodyme-pitfalls#11` "Example", `neodyme-pitfalls#14` "Example", `anchor-constraints#3` |
+
+  Two defects in one table. **The same documents come back for every handler** —
+  `anchor-constraints#3` and `neodyme-pitfalls#14` appear in all four, and
+  `withdraw`'s missing-signer bug pulls the same generic constraint reference as
+  `initialize`. And **the chunks that come back are navigation furniture**:
+  "Example", "On this page", a constraint reference for `#[account(mut)]`. The
+  prompt says "Report only defects that the reference documents actually
+  support", so the model returns `[]` — which is the *correct* answer to the
+  documents it was handed. Track 2's zeros are a retrieval result, not a
+  judgement result.
+
+  This makes "retrieve once per concern" (below) concrete rather than
+  speculative, and adds a second, cheaper lever: chunks titled "On this page"
+  are table-of-contents fragments with no rule text in them, and indexing them
+  at all is what lets them outrank the rule they sit next to. **Neither is fixed
+  by adding eval cases** — a bigger corpus of programs measures the same silence
+  more precisely.
+
 - **Track 2 cites URLs instead of `doc_id`s, and still invents class labels.**
   Observed 2026-09-06 on `leaky_vault` with the real retriever: the one finding
   the model produced was classed `pitfall` and cited
   `https://docs.solana.com/...` rather than the `doc_id` the prompt offered, so
-  the grounding filter (D12) dropped it — correctly, and silently as far as the
-  report is concerned. Both halves are prompt-and-schema problems with a
-  measurable cost: a URL citation can never match an offered document, and
+  the grounding filter (D12) dropped it. `validate_citations` now resolves a
+  citation by id, source URL *or* title, so naming an offered document any way
+  it was shown counts — but that did not recover this finding and was never
+  going to: the URL names no offered document at all, which makes it a genuine
+  hallucination rather than a naming mismatch, and D12 is right to drop it.
+  What remains is the label half, which has a measurable cost:
   `Finding::merge_key` is `(handler_id, class)`, so an invented label can never
   corroborate a Track 1 finding. A schema `enum` on `class` would forbid the
   latter outright but also forbids the honest "none of these fit" the prompt

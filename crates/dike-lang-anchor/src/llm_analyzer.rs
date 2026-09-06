@@ -104,6 +104,17 @@ impl Analyzer for LlmAnalyzer {
                 }
             };
 
+            // What came back, before the grounding gate decides. A unit that
+            // reviews clean and a unit that was handed irrelevant documents
+            // produce the same empty answer, and only this tells them apart.
+            tracing::debug!(
+                handler = %unit.handler_name,
+                grounded = is_grounded(&hits),
+                hits = ?hits.iter().map(|h| (&h.document.id, &h.document.title, h.dense_score))
+                    .collect::<Vec<_>>(),
+                "retrieved for this unit"
+            );
+
             // The grounding gate is a filter, not a hint: an ungrounded unit
             // is not reviewed at all, so nothing the model might invent
             // about it can reach a report.
