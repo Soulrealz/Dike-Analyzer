@@ -129,7 +129,10 @@ fn the_clean_fixture_has_no_noise_floor() {
         .find(|n| n.track == dike_core::eval::MetricTrack::Static)
         .unwrap();
     assert_eq!(noise.findings, 0, "the clean fixture now yields findings");
-    assert_eq!(noise.loc, 162);
+    // Pinned rather than bounded: the noise floor is findings-per-KLOC, so a
+    // fixture that quietly grows dilutes it. Changing this number is a
+    // deliberate act that says the denominator moved for a reason.
+    assert_eq!(noise.loc, 166);
 }
 
 /// The caveat is printed by the command so a summary downstream cannot drop it.

@@ -69,7 +69,16 @@ and precision **1.000** on `missing-signer`, `missing-owner-check`,
 **0**. `pda-validation-gap` scores **0.000** — see "Known gaps"; the harness
 found that on its first run, which is what it is for.
 
-441 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+**The fixture now yields 19 mutants (2026-09-06).** Three `constraint = ...`
+expressions were added to the clean fixture so `strip_constraint` has sites;
+before that, `removed-guard` — the one Track-2-only class — had never had a
+single case, and its `0.000` was indistinguishable from a class that ran and
+found nothing. Every other class holds its previous count and score exactly.
+`removed-guard` still scores 0.000 on Track 1 *by design*: there is no Track 1
+detector for it, and the class exists to be measured by Track 2, which has not
+been scored yet.
+
+443 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -127,14 +136,17 @@ found that on its first run, which is what it is for.
 │           └── commands/      analyze, ir, corpus
 ├── docs/
 │   ├── PROJECT_CONTEXT.md     This file
-│   ├── next_steps_2.md        Current handoff: what is left, rules, live findings
+│   ├── next_steps_3.md        Current handoff: what is left, rules, live findings
+│   ├── next_steps_2.md        Superseded handoff (Phase 7 archaeology)
 │   ├── next_steps.md          Superseded handoff (Phase 5–6 archaeology)
 │   └── superpowers/
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
 ├── tests/fixtures/programs/   Anchor fixture programs, parsed as text
 │   ├── vault/                 the clean one, and the mutation source. HAS a Cargo.toml:
-│   │                           it is the only fixture the eval harness builds (D14)
+│   │                           it is the only fixture the eval harness builds (D14).
+│   │                           Its `constraint = ...` expressions are the only
+│   │                           `removed-guard` sites that exist — see "Quirks"
 │   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it.
 │                               No Cargo.toml — nothing builds it
 ├── justfile                   The invocation story: check, gates, eval*, holdout,
@@ -547,7 +559,7 @@ real constraint. Ordinary choices need no justification.
   word does not mean.
 
 - **`dike eval run` analyzes the clean copy once per program, not once per
-  mutant.** The clean run is identical for all 16 mutants and is otherwise the
+  mutant.** The clean run is identical for every mutant and is otherwise the
   largest cost in the loop — with Track 2 on, it would be a full model pass per
   case.
 
@@ -571,6 +583,38 @@ real constraint. Ordinary choices need no justification.
   prints the memorization caveat *first*, before anything that could fail or be
   skimmed, because a caveat in a document is something a downstream summary can
   drop and a line in the output is not.
+
+- **The fixture's `constraint = ...` expressions live on the `vault` account,
+  not on the accounts they talk about.** `constraint = vault_token_account.owner
+  == vault.key()` reads as if it belongs on `vault_token_account`, and putting it
+  there is wrong twice over. First, `account_to_unchecked` skips any declaration
+  whose own attribute text mentions `<its own name>.` — a `seeds`/`bump`
+  expression that reads the field's own data does not compile once the wrapper
+  becomes `UncheckedAccount` — so hosting the constraint on
+  `vault_token_account` silently *deletes* a `missing-owner-check` mutation site,
+  trading one new class for the loss of a measured one. Second,
+  `owner.rs::raw_is_identity_pinning` treats any raw constraint containing
+  `.key()` as pinning identity, so the constraint would suppress the very
+  finding that mutation is meant to inject. Hosting it on `vault` — already
+  skipped by `account_to_unchecked` for its `bump = vault.bump`, and already
+  carrying `has_one` — costs nothing. Verified by inventory: the fixture yields
+  the same 16 mutants it did before plus 3 `removed-guard`, with no class's
+  count or score moved.
+
+- **A `constraint` on the `vault` declaration must never contain the string
+  `admin`.** `authority.rs::raw_pins_field` suppresses a
+  `missing-authority-binding` finding when a raw constraint's text mentions the
+  authority field *and* contains `.key()` or `==`. The fixture's constraints
+  are `vault_token_account.owner == vault.key()` and `vault.amount == 0`;
+  either one rewritten to mention `admin` would silently zero out
+  `strip_has_one`'s 3/3 recall.
+
+- **`close_vault`'s emptiness guard was moved from the handler body into a
+  `constraint`, not duplicated into one.** Leaving
+  `require!(vault.amount == 0, …)` in the body while adding the same check as a
+  constraint makes `strip_constraint`'s mutant carry no defect at all: the body
+  still enforces it. The harness would then score a correct silence as a miss,
+  which is worse than not measuring the class.
 
 ## Licensing (binding)
 
@@ -610,6 +654,12 @@ notes and *is* committed.
   what a missing PDA constraint looks like in code that compiles — and it moves
   a pinned confidence, so it invalidates the history series and belongs in its
   own change.
+- **`removed-guard` now has cases but still has no number.** The clean fixture
+  grew three `constraint = ...` expressions on 2026-09-06 so `strip_constraint`
+  has sites at all — before that the class had never produced a single mutant,
+  and its `0.000` said nothing. It is Track-2-only by design (D16), so Track 1
+  scoring it 0/3 is correct, not a gap. The gap is that Track 2 has never been
+  scored, so the class the harness now measures is still unmeasured.
 - `benchmarks/holdout/cases.toml` is an empty scaffold; the real holdout has
   never been scored.
 - The CI LLM job is a build check, not a scored run: GitHub runners have no GPU,

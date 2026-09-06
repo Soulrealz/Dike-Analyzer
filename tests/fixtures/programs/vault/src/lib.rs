@@ -59,8 +59,7 @@ pub mod vault {
     }
 
     /// Closes the vault, returning its rent lamports to `admin`.
-    pub fn close_vault(ctx: Context<CloseVault>) -> Result<()> {
-        require!(ctx.accounts.vault.amount == 0, VaultError::VaultNotEmpty);
+    pub fn close_vault(_ctx: Context<CloseVault>) -> Result<()> {
         Ok(())
     }
 }
@@ -89,6 +88,7 @@ pub struct Deposit<'info> {
         seeds = [b"vault", vault.admin.as_ref()],
         bump = vault.bump,
         has_one = admin,
+        constraint = vault_token_account.owner == vault.key() @ VaultError::WrongVaultTokenAccount,
     )]
     pub vault: Account<'info, Vault>,
 
@@ -113,6 +113,7 @@ pub struct Withdraw<'info> {
         seeds = [b"vault", vault.admin.as_ref()],
         bump = vault.bump,
         has_one = admin,
+        constraint = vault_token_account.owner == vault.key() @ VaultError::WrongVaultTokenAccount,
     )]
     pub vault: Account<'info, Vault>,
 
@@ -135,6 +136,7 @@ pub struct CloseVault<'info> {
         bump = vault.bump,
         has_one = admin,
         close = admin,
+        constraint = vault.amount == 0 @ VaultError::VaultNotEmpty,
     )]
     pub vault: Account<'info, Vault>,
 
@@ -159,4 +161,6 @@ pub enum VaultError {
     Overflow,
     #[msg("vault must be empty before closing")]
     VaultNotEmpty,
+    #[msg("token account is not owned by the vault PDA")]
+    WrongVaultTokenAccount,
 }

@@ -844,13 +844,7 @@ pub struct G<'info> {
         let program = crate::parser::parse_tree(&tree).program;
         for op in all_operators() {
             let n = op.apply(&program, &tree).len();
-            // `constraint = ...` does not appear in the clean fixture; it is
-            // the one operator the fixture cannot exercise.
-            if op.name() == "strip_constraint" {
-                assert_eq!(n, 0);
-            } else {
-                assert!(n > 0, "{} produced no mutants", op.name());
-            }
+            assert!(n > 0, "{} produced no mutants", op.name());
         }
     }
 }

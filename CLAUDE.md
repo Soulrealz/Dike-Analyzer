@@ -85,3 +85,17 @@ Connecting to a closed local port in a test is fine.
 ## Rule 9 — the user owns version control
 
 Do not run `git` commands unless asked. Propose the commit; let the user run it.
+
+## Rule 10 — keep `learning/` in sync
+
+`learning/` is a crate-by-crate Rust + architecture tutorial, built file by
+file (see `learning/README.md` for the index). If a change meaningfully
+alters the behavior, structure, or reasoning of a source file that already
+has a corresponding `learning/part-NN-*.md` lesson — a rewritten invariant,
+a removed field, different control flow — update that lesson in the same
+commit. A stale tutorial actively misleads someone learning from it, which
+is worse than no tutorial.
+
+Do not update a lesson for changes that don't affect what it teaches (a new
+test, a comment tweak, a dependency bump). A source file with no lesson yet
+just hasn't been toured — that's not staleness and needs no action.
