@@ -145,6 +145,68 @@ fn is_finding_id(line: &str) -> bool {
         || !after.chars().next().unwrap().is_alphanumeric()
 }
 
+/// Longest chunk to index, in characters.
+///
+/// Measured 2026-09-06 on the real corpus: chunks ran to 5.5 KB, and the
+/// largest were code examples with no defect named in them. A chunk that
+/// large embeds to an average over everything inside it, which sits
+/// moderately close to *any* query of the same genre and therefore beats
+/// smaller, sharper chunks on all of them — all four handlers of the
+/// vulnerable fixture retrieved the same two blobs. The cap is on the
+/// indexed unit, not on the source: an oversized section is split at line
+/// boundaries, never truncated.
+pub(crate) const MAX_CHUNK_CHARS: usize = 1500;
+
+/// The heading level of a boundary line, for building the ancestor path.
+///
+/// A finding ID (`OS-VLT-ADV-00`) is its own top-level section: it names one
+/// finding, and nothing above it in the document scopes it.
+fn boundary_level(line: &str) -> usize {
+    if is_markdown_heading(line) {
+        line.bytes().take_while(|&b| b == b'#').count()
+    } else {
+        1
+    }
+}
+
+/// Push `heading` at `level` onto the ancestor stack and return the path.
+///
+/// A level-3 heading replaces everything from level 3 down, so the path
+/// always reads root-to-leaf with no stale siblings left behind.
+fn push_heading(stack: &mut Vec<String>, level: usize, heading: &str) -> String {
+    stack.truncate(level.saturating_sub(1));
+    while stack.len() < level.saturating_sub(1) {
+        stack.push(String::new());
+    }
+    stack.push(heading.to_string());
+    stack.iter().filter(|h| !h.is_empty()).cloned().collect::<Vec<_>>().join(" — ")
+}
+
+/// Split `text` into pieces of at most [`MAX_CHUNK_CHARS`], at line
+/// boundaries. Every line lands in exactly one piece; a single line longer
+/// than the cap is emitted whole rather than cut mid-content.
+fn split_oversized(text: &str) -> Vec<String> {
+    if text.len() <= MAX_CHUNK_CHARS {
+        return vec![text.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for line in text.lines() {
+        if !cur.is_empty() && cur.len() + line.len() + 1 > MAX_CHUNK_CHARS {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(line);
+        cur.push('\n');
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(text.to_string());
+    }
+    out
+}
+
 /// Split `raw_text` into per-finding [`Document`] chunks, inheriting tags
 /// and identity from `source`. See the module docs for the boundary rules.
 pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
@@ -156,13 +218,19 @@ pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
     let mut fragments: Vec<(Option<String>, String)> = Vec::new();
     let mut current_title: Option<String> = None;
     let mut current_text = String::new();
+    // Root-to-leaf headings in force at the current line. A `#### Example`
+    // under `### Missing X check` is meaningless on its own — this is what
+    // keeps the section that names the defect attached to the code that
+    // shows it.
+    let mut ancestors: Vec<String> = Vec::new();
 
     for line in raw_text.lines() {
         if is_boundary(line) {
             if !current_text.is_empty() {
                 fragments.push((current_title.take(), std::mem::take(&mut current_text)));
             }
-            current_title = Some(line.trim_start_matches('#').trim().to_string());
+            let heading = line.trim_start_matches('#').trim().to_string();
+            current_title = Some(push_heading(&mut ancestors, boundary_level(line), &heading));
         }
         current_text.push_str(line);
         current_text.push('\n');
@@ -196,8 +264,24 @@ pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
                 // swallowed the first real section *and its heading*, so
                 // the section that a citation should have named fell back
                 // to the source title instead.
-                if p.0.is_none() {
-                    p.0 = title;
+                match (&p.0, &title) {
+                    // Fill an absent title.
+                    (None, _) => p.0 = title,
+                    // Absorbing a DESCENDANT: take the deeper path. A
+                    // pending `## Faults` that swallows `### Absent guard
+                    // check` / `#### Example` describes the example, and
+                    // naming it "Faults" throws away the two headings that
+                    // say what the example is of — the whole point of
+                    // carrying ancestors.
+                    (Some(have), Some(incoming))
+                        if incoming.len() > have.len() && incoming.starts_with(have.as_str()) =>
+                    {
+                        p.0 = title
+                    }
+                    // Absorbing a SIBLING or an unrelated section: keep the
+                    // heading the chunk starts with, or a chunk ends up
+                    // named after the last thing merged into it.
+                    _ => {}
                 }
             }
             _ => {
@@ -215,8 +299,20 @@ pub fn chunk_by_finding(source: &Source, raw_text: &str) -> Vec<Document> {
         merged.push(done);
     }
 
+    // Both retrieval legs score the TEXT, so the ancestor path has to be in
+    // it and not only in the title — a breadcrumb that reaches the citation
+    // but not the index leaves the evidence chunk exactly as unfindable.
+    // Splitting comes after, so every piece of an oversized section carries
+    // the same path.
     merged
         .into_iter()
+        .flat_map(|(title, text)| {
+            let body = match title.as_deref() {
+                Some(path) if !text.contains(path) => format!("{path}\n\n{text}"),
+                _ => text,
+            };
+            split_oversized(&body).into_iter().map(move |piece| (title.clone(), piece))
+        })
         .enumerate()
         .map(|(index, (title, text))| {
             let lowered = text.to_lowercase();
@@ -470,6 +566,73 @@ class_tags = []
     fn corpus_hash_changes_when_a_document_is_added() {
         let a = doc("a", "x");
         assert_ne!(corpus_hash(std::slice::from_ref(&a)), corpus_hash(&[a, doc("b", "y")]));
+    }
+
+    /// Measured 2026-09-06 against the real corpus: the chunk carrying the
+    /// evidence is divorced from the chunk carrying the label. A source
+    /// structured `### Missing X check` / `#### Example` splits so the
+    /// Example chunk is titled just "Example" and its text never names the
+    /// defect, while the sharp little chunk that does name it holds no code.
+    /// Retrieval then returns the same two or three large Example blobs for
+    /// every handler. Carrying the ancestor headings down is what reconnects
+    /// evidence to label.
+    #[test]
+    fn a_subsection_inherits_its_ancestor_headings_in_its_title() {
+        let body = "x".repeat(400);
+        let text = format!("## Faults\n\n### Absent guard check\n\n#### Example\n\n{body}\n");
+        let cs = chunk_by_finding(&src(), &text);
+        let example = cs.last().expect("a chunk for the example");
+        assert!(
+            example.title.contains("Absent guard check"),
+            "the example must carry the section that names the defect: {}",
+            example.title
+        );
+        assert!(example.title.contains("Example"), "and its own heading: {}", example.title);
+    }
+
+    /// The title alone is not enough: both retrieval legs score the indexed
+    /// TEXT. A breadcrumb that reaches the title but not the text leaves the
+    /// evidence chunk exactly as unfindable as before.
+    #[test]
+    fn the_ancestor_headings_reach_the_indexed_text_not_only_the_title() {
+        let body = "x".repeat(400);
+        let text = format!("### Absent guard check\n\n#### Example\n\n{body}\n");
+        let cs = chunk_by_finding(&src(), &text);
+        let example = cs.last().unwrap();
+        assert!(
+            example.text.contains("Absent guard check"),
+            "the text is what BM25 and the embedder see: {}",
+            &example.text[..example.text.len().min(200)]
+        );
+    }
+
+    /// A 5.5 KB chunk's embedding is an average over everything in it, which
+    /// sits moderately close to any query and beats sharper, smaller chunks
+    /// on all of them. Splitting oversized chunks is what stops a handful of
+    /// blobs winning every retrieval.
+    #[test]
+    fn an_oversized_chunk_is_split_into_several() {
+        let text = format!("## Big\n\n{}\n", "line of prose here\n".repeat(600));
+        let cs = chunk_by_finding(&src(), &text);
+        assert!(cs.len() > 1, "expected the oversized chunk to be split, got {}", cs.len());
+        for c in &cs {
+            assert!(
+                c.text.len() <= MAX_CHUNK_CHARS * 2,
+                "a chunk survived at {} chars",
+                c.text.len()
+            );
+        }
+    }
+
+    /// Splitting must move content, never drop it. A silent loss here is a
+    /// corpus that no longer says what it says, and nothing downstream would
+    /// notice.
+    #[test]
+    fn splitting_an_oversized_chunk_loses_no_content() {
+        let text = format!("## Big\n\n{}\n", "unique-marker line\n".repeat(600));
+        let cs = chunk_by_finding(&src(), &text);
+        let total: usize = cs.iter().map(|c| c.text.matches("unique-marker").count()).sum();
+        assert_eq!(total, 600, "every line must survive in exactly one chunk");
     }
 
     #[test]

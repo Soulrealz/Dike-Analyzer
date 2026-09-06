@@ -760,6 +760,92 @@ notes and *is* committed.
   what a missing PDA constraint looks like in code that compiles — and it moves
   a pinned confidence, so it invalidates the history series and belongs in its
   own change.
+- **Corpus chunks carry their ancestor headings, and are capped at 1500 chars.**
+  A source structured `### Missing signer check` / `#### Example` used to split
+  so the Example chunk was titled just "Example" with the defect named in
+  neither its title nor its text — the chunk holding the evidence was divorced
+  from the chunk holding the label, and could not be retrieved by the thing it
+  was evidence of. Chunks now inherit the root-to-leaf heading path into the
+  title *and* the indexed text, because both retrieval legs score the text and a
+  breadcrumb that reaches only the citation changes nothing. The cap exists
+  because a 5.5 KB chunk embeds to an average over everything inside it, which
+  sits moderately close to any query of the same genre and beats sharper small
+  chunks on all of them: all four handlers of the vulnerable fixture were
+  retrieving the same two blobs. Oversized sections are split at line
+  boundaries, never truncated. Corpus went 397 → 470 chunks, max 5534 → 1500,
+  and the corpus hash with it — so Track 2 runs either side of this are not
+  comparable, while Track 1 is untouched. **It did not help**: Track 2 re-scored
+  at 0.000 on every class, now with 0 dropped units rather than 36.
+
+- **Real-program noise went 4.21 → 0.64 findings/KLOC (2026-09-06).** Two
+  changes, measured by re-running the same 12-program sweep after each, with the
+  mutation eval as the recall guard — every Track 1 class held recall and
+  precision at exactly its previous value through both.
+
+  | | findings | /KLOC |
+  |---|---:|---:|
+  | baseline | 119 | 4.21 |
+  | + authority narrowing | 49 | 1.73 |
+  | + subject collapse | **18** | **0.64** |
+
+  **The narrowing:** `missing-authority-binding` now fires only when the
+  accounts struct declares an account that *claims* the stored authority —
+  either named exactly for the field, or carrying an authority role
+  (`authority`, `admin`, `owner`, `delegate`, `manager`; `payer` and `signer`
+  are excluded as too generic, since nearly every `init` struct has a payer).
+  A handler taking a `sender` or a `user` and reading a config that happens to
+  store an `admin` is not acting on that authority and has nothing to bind.
+  Keyed on the accounts struct rather than the handler body because real
+  programs delegate (`fn claim(ctx) { claim::handler(ctx) }`) and the body
+  carries no state writes to reason from — a body-based rule would silence
+  every delegating program.
+
+  **The collapse:** [`merge::collapse_by_subject`] groups on
+  `(class, subject, file)` and keeps one row, whose evidence names every other
+  handler the same defect reaches. `Finding::subject` is the anchor. Read the
+  row count honestly: **it reduces triage rows, not the number of edits.** One
+  `config.pending_admin` row stands for eight accounts structs that each still
+  need a `has_one`, and the evidence enumerates all eight. Note also that
+  `Location::file` is the *handler's* file — for a delegating program every
+  handler reports `lib.rs`, so the file component of the key does no work
+  there, and two same-named accounts in different structs will share a row.
+  Nothing is deleted, so this stays inside Rule 3, but a future change that
+  wanted per-declaration rows would need the accounts struct's own file on the
+  finding.
+
+- **First measurement on real programs (2026-09-06): 119 findings over 28,247
+  LOC of production Anchor code — but only 31 distinct sites.** Track 1 was run
+  over 12 real programs (a production cross-chain messaging stack plus four
+  in-house projects), 155 handlers. The headline rate is **4.21 findings/KLOC**;
+  deduplicated to one row per `(account, field)` it is **1.10/KLOC**, because
+  each site is re-reported **3.8×** on average — once per handler that touches
+  the same config account.
+
+  | | |
+  |---|---|
+  | findings | 119 (117 High, 2 Critical) |
+  | distinct sites | 31 |
+  | `missing-authority-binding` | 101 findings from **19** sites |
+  | `missing-owner-check` | 16 |
+  | `missing-signer` | 2 |
+  | suppressed | 0 across all 12 programs |
+
+  Two defects fall straight out of the shape of that table. **The same finding
+  is emitted once per handler**: a config PDA storing `pending_admin` was
+  reported 19 times in one program, `pending_authority` 14 times in another,
+  because every instruction that reads the config re-triggers it. And
+  **`missing-authority-binding` over-fires on stored config**: it flags any
+  state struct carrying an authority-shaped `Pubkey` that the handler's accounts
+  struct does not bind, including handlers that merely *read* the config and
+  perform no privileged action — and including `pending_*` fields, which are
+  staged values rather than live authorities. Audited production code trips it
+  five times on one global settings account.
+
+  The noise is therefore concentrated, not diffuse, which is the good case: one
+  dedup and one predicate narrowing address ~85% of it. The measurement also
+  found real signal — three unpinned `UncheckedAccount` payout recipients in a
+  prediction-market program, in `claim`, `place_bet` and `refund`.
+
 - **Retrieval, not the model, is why Track 2 is silent — measured, not
   suspected.** Logged 2026-09-06 (`RUST_LOG=dike_lang_anchor=debug`) over
   `leaky_vault`, whose four handlers include a blatant unsigned authority:
