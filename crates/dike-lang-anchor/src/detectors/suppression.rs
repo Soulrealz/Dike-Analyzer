@@ -800,6 +800,12 @@ mod tests {
             pub struct Vault { pub admin: Pubkey, pub amount: u64 }
             #[derive(Accounts)]
             pub struct W<'info> {
+                // Load-bearing: `missing-authority-binding` only fires
+                // when the struct declares an account named after the
+                // stored authority field. Without this the finding these
+                // tests suppress (or refuse to suppress) never exists,
+                // and they pass vacuously.
+                pub admin: Signer<'info>,
                 pub payer: Signer<'info>,
                 pub owner: AccountInfo<'info>,
                 #[account(mut)]
@@ -948,6 +954,12 @@ mod tests {
             pub struct Vault { pub admin: Pubkey, pub amount: u64 }
             #[derive(Accounts)]
             pub struct W<'info> {
+                // Load-bearing: `missing-authority-binding` only fires
+                // when the struct declares an account named after the
+                // stored authority field. Without this the finding these
+                // tests suppress (or refuse to suppress) never exists,
+                // and they pass vacuously.
+                pub admin: Signer<'info>,
                 pub authority: Signer<'info>,
                 pub my_vault: UncheckedAccount<'info>,
                 #[account(mut)]
@@ -1004,6 +1016,12 @@ mod tests {
             pub struct Vault { pub admin: Pubkey, pub seed: u64 }
             #[derive(Accounts)]
             pub struct W<'info> {
+                // Load-bearing: `missing-authority-binding` only fires
+                // when the struct declares an account named after the
+                // stored authority field. Without this the finding these
+                // tests suppress (or refuse to suppress) never exists,
+                // and they pass vacuously.
+                pub admin: Signer<'info>,
                 pub authority: Signer<'info>,
                 pub mint: UncheckedAccount<'info>,
                 #[account(mut)]
@@ -1044,6 +1062,12 @@ mod tests {
             pub struct Vault { pub admin: Pubkey, pub is_initialized: bool }
             #[derive(Accounts)]
             pub struct W<'info> {
+                // Load-bearing: `missing-authority-binding` only fires
+                // when the struct declares an account named after the
+                // stored authority field. Without this the finding these
+                // tests suppress (or refuse to suppress) never exists,
+                // and they pass vacuously.
+                pub admin: Signer<'info>,
                 pub payer: Signer<'info>,
                 pub owner: AccountInfo<'info>,
                 #[account(mut)]

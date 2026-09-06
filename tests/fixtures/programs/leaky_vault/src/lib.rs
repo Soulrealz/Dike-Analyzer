@@ -58,6 +58,17 @@ pub mod leaky_vault {
         vault.admin = new_admin;
         Ok(())
     }
+
+    /// Admin-gated in name only: `admin` signs, but nothing checks that the
+    /// signer is the admin this vault actually stores. Any account willing to
+    /// sign can set the fee. This is the fixture's `missing-authority-binding`
+    /// case — the other handlers either take no signer at all (which is
+    /// `missing-signer`, a different defect) or claim no authority role.
+    pub fn set_fee(ctx: Context<SetFee>, fee: u64) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        vault.amount = fee;
+        Ok(())
+    }
 }
 
 #[account]
@@ -105,4 +116,13 @@ pub struct SetAdmin<'info> {
     #[account(mut)]
     pub vault: Account<'info, Vault>,
     pub caller: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SetFee<'info> {
+    // No `has_one = admin`: the signer below is never matched against
+    // `vault.admin`.
+    #[account(mut)]
+    pub vault: Account<'info, Vault>,
+    pub admin: Signer<'info>,
 }

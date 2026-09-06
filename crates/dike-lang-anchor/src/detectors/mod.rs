@@ -56,6 +56,10 @@ pub fn finding_at(
         blake3::hash(seed.as_bytes()).to_hex()[..16].to_string()
     };
     Finding {
+        // `key` already identifies what the finding is about — an account
+        // name, or `account.field` where one account carries several. That
+        // is exactly the anchor duplicate rows collapse on.
+        subject: Some(key.to_string()),
         id,
         class: VulnClass::new(detector.class()),
         severity: detector.severity(),

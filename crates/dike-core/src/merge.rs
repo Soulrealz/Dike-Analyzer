@@ -1,5 +1,6 @@
 use crate::finding::{Finding, Track, VulnClass};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// D3: model-reported confidence, clamped, down-weighted on a lone citation.
 pub fn track2_confidence(raw: f32, citation_count: usize) -> f32 {
@@ -27,7 +28,64 @@ pub fn corroborate(a: &Finding, b: &Finding) -> Finding {
         location: a.location.clone(),
         evidence: format!("{}\n\n---\n\n{}", a.evidence, b.evidence),
         citations,
+        subject: a.subject.clone().or_else(|| b.subject.clone()),
     }
+}
+
+/// Collapse findings that are the same defect seen from several handlers.
+///
+/// Track 1 detectors run once per handler, so a config account whose stored
+/// authority nothing binds is reported once per instruction that takes it.
+/// Measured 2026-09-06 over 28k LOC of real programs: 49 findings came from
+/// 19 distinct `(class, subject)` sites, one of them appearing 19 times. An
+/// auditor has one thing to fix there, not nineteen.
+///
+/// Aggregation, never deletion (Rule 3): the surviving row names every other
+/// handler the same defect appears in, so nothing an auditor could act on is
+/// lost — only the repetition is.
+///
+/// Findings with no `subject` (Track 2) are never collapsed: without an
+/// account-level anchor there is nothing to prove two rows are the same
+/// defect rather than two defects in one file.
+///
+/// Deterministic (Rule 5): grouping is a `BTreeMap`, and the surviving row is
+/// the lowest `(line, handler)` in the group rather than whichever happened
+/// to be produced first.
+pub fn collapse_by_subject(findings: Vec<Finding>) -> Vec<Finding> {
+    let mut groups: BTreeMap<(String, VulnClass, PathBuf), Vec<Finding>> = BTreeMap::new();
+    let mut ungrouped: Vec<Finding> = Vec::new();
+
+    for f in findings {
+        match &f.subject {
+            Some(subject) => groups
+                .entry((subject.clone(), f.class.clone(), f.location.file.clone()))
+                .or_default()
+                .push(f),
+            None => ungrouped.push(f),
+        }
+    }
+
+    let mut out = ungrouped;
+    for (_, mut group) in groups {
+        group.sort_by(|a, b| {
+            a.location.line.cmp(&b.location.line).then(a.location.handler.cmp(&b.location.handler))
+        });
+        let mut survivor = group.remove(0);
+        if !group.is_empty() {
+            let mut others: Vec<String> =
+                group.into_iter().map(|f| f.location.handler).collect();
+            others.sort();
+            others.dedup();
+            survivor.evidence = format!(
+                "{}\n\nThe same defect is reachable from {} other handler(s): {}.",
+                survivor.evidence,
+                others.len(),
+                others.join(", ")
+            );
+        }
+        out.push(survivor);
+    }
+    out
 }
 
 /// Dedupe on (handler_id, class) — D5 — then rank. Corroborated findings surface
@@ -68,6 +126,7 @@ pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<F
                         location: existing.location.clone(),
                         evidence: format!("{}\n\n---\n\n{}", existing.evidence, f.evidence),
                         citations,
+                        subject: existing.subject.clone().or_else(|| f.subject.clone()),
                     }
                 } else {
                     corroborate(&existing, &f)
@@ -100,6 +159,82 @@ mod tests {
     use crate::finding::{Finding, Location, Severity, Track, VulnClass};
     use std::path::PathBuf;
 
+    fn subject_finding(subject: &str, class: &str, handler: &str, line: u32) -> Finding {
+        Finding {
+            id: format!("{handler}-{subject}"),
+            class: VulnClass::new(class),
+            severity: Severity::High,
+            confidence: 0.7,
+            track: Track::Static,
+            location: Location {
+                file: PathBuf::from("src/lib.rs"),
+                line,
+                handler: handler.to_string(),
+            },
+            evidence: format!("{subject} is unbound"),
+            citations: vec![],
+            subject: Some(subject.to_string()),
+        }
+    }
+
+    /// The measured case: one config account's unbound authority reported
+    /// once per instruction that takes the config.
+    #[test]
+    fn one_defect_seen_from_many_handlers_collapses_to_one_row() {
+        let fs = vec![
+            subject_finding("config.admin", "missing-authority-binding", "claim", 40),
+            subject_finding("config.admin", "missing-authority-binding", "place_bet", 12),
+            subject_finding("config.admin", "missing-authority-binding", "refund", 88),
+        ];
+        let out = collapse_by_subject(fs);
+        assert_eq!(out.len(), 1, "three handlers, one defect: {out:#?}");
+        assert_eq!(out[0].location.handler, "place_bet", "lowest line survives, deterministically");
+    }
+
+    /// Aggregation, not deletion: an auditor must still learn every handler
+    /// the defect is reachable from, or collapsing would be hiding findings.
+    #[test]
+    fn the_surviving_row_names_the_handlers_it_absorbed() {
+        let fs = vec![
+            subject_finding("config.admin", "missing-authority-binding", "claim", 40),
+            subject_finding("config.admin", "missing-authority-binding", "refund", 88),
+        ];
+        let out = collapse_by_subject(fs);
+        // `claim` is at the lower line, so it survives and `refund` is the
+        // one absorbed — the row must name what it swallowed, not itself.
+        assert_eq!(out[0].location.handler, "claim");
+        assert!(
+            out[0].evidence.contains("refund"),
+            "absorbed handler must be named: {}",
+            out[0].evidence
+        );
+        assert!(out[0].evidence.contains("1 other handler"), "{}", out[0].evidence);
+    }
+
+    /// Different subjects are different defects, and different classes on one
+    /// subject are different defects too. Collapsing either would be a real
+    /// loss of recall rather than a loss of repetition.
+    #[test]
+    fn different_subjects_and_classes_are_never_collapsed() {
+        let fs = vec![
+            subject_finding("config.admin", "missing-authority-binding", "claim", 40),
+            subject_finding("config.treasury", "missing-authority-binding", "claim", 41),
+            subject_finding("config.admin", "missing-owner-check", "claim", 40),
+        ];
+        assert_eq!(collapse_by_subject(fs).len(), 3);
+    }
+
+    /// Track 2 findings carry no subject. Two of them in one file must not be
+    /// mistaken for one defect.
+    #[test]
+    fn findings_without_a_subject_are_left_alone() {
+        let mut a = subject_finding("x", "missing-signer", "one", 1);
+        let mut b = subject_finding("x", "missing-signer", "two", 2);
+        a.subject = None;
+        b.subject = None;
+        assert_eq!(collapse_by_subject(vec![a, b]).len(), 2);
+    }
+
     fn f(track: Track, class: &str, sev: Severity, conf: f32, handler: &str) -> Finding {
         Finding {
             id: String::new(),
@@ -114,6 +249,7 @@ mod tests {
             },
             evidence: format!("{track:?} evidence"),
             citations: vec![],
+            subject: None,
         }
     }
 

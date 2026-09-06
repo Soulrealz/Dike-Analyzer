@@ -80,6 +80,7 @@ mod tests {
             location: Location { file: PathBuf::from("src/lib.rs"), line: 42, handler: "withdraw".into() },
             evidence: "`authority` account has no signer constraint".into(),
             citations: vec![],
+            subject: None,
         };
         Report {
             run: RunMetadata {

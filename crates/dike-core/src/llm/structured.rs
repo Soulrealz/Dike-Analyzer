@@ -338,6 +338,9 @@ pub fn validate_citations(
     };
 
     Some(Finding {
+        // Track 2 reports against a handler, not a declaration: it has no
+        // account/field anchor to collapse duplicates on.
+        subject: None,
         id,
         class: VulnClass::new(f.class),
         severity: parse_severity(&f.severity),

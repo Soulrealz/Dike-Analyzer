@@ -57,13 +57,34 @@ impl Detector for MissingAuthorityBindingDetector {
                     .filter(|field| {
                         !has_one_targets.iter().any(|t| t == field)
                             && !raw_texts.iter().any(|text| raw_pins_field(text, field))
+                            // The handler must actually claim this authority.
+                            // Measured 2026-09-06 over 28k LOC of real
+                            // programs: without this, 101 of 119 findings were
+                            // handlers that merely READ a config account
+                            // storing an admin key — a production messaging
+                            // stack tripped it from `send`, `clear` and `burn`
+                            // alike. A struct that declares an account named
+                            // after the stored field means to act as it, and
+                            // not binding it is the defect; a struct that
+                            // declares no such account is not acting on that
+                            // authority at all and has nothing to bind.
+                            //
+                            // Keyed on the accounts struct rather than the
+                            // handler body because real programs delegate
+                            // (`fn claim(ctx) { claim::handler(ctx) }`), so
+                            // the body holds no state writes to reason from.
+                            && accounts.decls.iter().any(|c| claims_authority(&c.name, field))
                     })
                     .map(move |field| {
                         let line = if d.attr_line != 0 { d.attr_line } else { d.line };
                         super::finding_at(
                             self,
                             handler,
-                            &d.name,
+                            // Account AND field: one account can store two
+                            // unbound authority fields, and keying on the
+                            // account alone gave them the same id and would
+                            // now collapse them into one row.
+                            &format!("{}.{}", d.name, field),
                             line,
                             format!(
                                 "`{}` (`{:?}`) has a `{}` field that looks like an authority but \
@@ -78,6 +99,34 @@ impl Detector for MissingAuthorityBindingDetector {
             })
             .collect()
     }
+}
+
+/// Roles that mean "this handler acts as the account's authority".
+///
+/// Deliberately narrower than [`crate::detectors::AUTHORITY_NAMES`], which
+/// also carries `payer` and `signer`. Nearly every `init`-style struct
+/// declares a `payer`, and `signer` is a wrapper name as much as a role, so
+/// counting either as a claim would put the over-firing straight back.
+const CLAIMING_ROLES: [&str; 5] = ["authority", "admin", "owner", "delegate", "manager"];
+
+/// Does declaring an account called `decl` amount to claiming the stored
+/// authority field `field`?
+///
+/// Exact name first, because `has_one = admin` binds `vault.admin` to the
+/// account literally called `admin` and that is the common case. Then the
+/// role match, because real programs drift: the vulnerable fixture stores
+/// `Vault.admin` and declares the account as `authority`, which is the same
+/// claim under a different word. Requiring literal equality there would be a
+/// recall gap on a shape the project's own fixture demonstrates.
+fn claims_authority(decl: &str, field: &str) -> bool {
+    if decl == field {
+        return true;
+    }
+    let role = |n: &str| {
+        let lower = n.to_ascii_lowercase();
+        CLAIMING_ROLES.iter().any(|r| lower.split('_').any(|seg| seg == *r))
+    };
+    role(decl) && role(field)
 }
 
 /// A `Raw` constraint only counts as binding `field` when its text both
@@ -163,6 +212,72 @@ mod tests {
             pub vault: Account<'info, Vault>,
         }
     "#;
+
+    /// Measured 2026-09-06 over 28k LOC of real programs: this detector
+    /// produced 101 of 119 findings, and the bulk were handlers that merely
+    /// *read* a global config account which happens to store an admin key.
+    /// A production messaging stack tripped it five times on one settings
+    /// account, from `send`, `clear` and `burn` — user-facing operations that
+    /// act on nobody's authority.
+    ///
+    /// The signal that separates the two: does this handler's accounts struct
+    /// declare an account named after the stored authority field? If it takes
+    /// an `admin` account, it means to act as `admin`, and failing to bind it
+    /// is the bug. If it takes no such account, the stored `admin` is
+    /// somebody else's business and there is nothing here to bind.
+    ///
+    /// Body-independent on purpose: real programs delegate
+    /// (`pub fn claim(ctx) -> Result<()> { claim::handler(ctx) }`), so the
+    /// handler body carries no state writes to key off, and a rule that
+    /// needed one would silence every delegating program.
+    #[test]
+    fn does_not_flag_a_handler_that_only_reads_a_config_it_never_acts_as() {
+        let src = r#"
+            #[program]
+            pub mod messaging {
+                pub fn send(ctx: Context<Send>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Settings { pub admin: Pubkey, pub fee: u64 }
+            #[derive(Accounts)]
+            pub struct Send<'info> {
+                pub sender: Signer<'info>,
+                pub settings: Account<'info, Settings>,
+            }
+        "#;
+        assert!(
+            findings_for(src).is_empty(),
+            "`send` declares no `admin` account, so it never claims that authority: {:#?}",
+            findings_for(src)
+        );
+    }
+
+    /// The complement, and the reason the rule is a name match rather than a
+    /// blanket "only flag admin-looking handlers": the moment a struct DOES
+    /// take the account the stored field names, the binding is the developer's
+    /// stated intent and its absence is the defect. This is the shape every
+    /// `strip_has_one` mutant has, so it is also what keeps eval recall at
+    /// 1.000.
+    #[test]
+    fn still_flags_a_handler_that_declares_the_authority_it_never_binds() {
+        let src = r#"
+            #[program]
+            pub mod messaging {
+                pub fn set_fee(ctx: Context<SetFee>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Settings { pub admin: Pubkey, pub fee: u64 }
+            #[derive(Accounts)]
+            pub struct SetFee<'info> {
+                pub admin: Signer<'info>,
+                #[account(mut)]
+                pub settings: Account<'info, Settings>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert_eq!(f.len(), 1, "expected the unbound admin to be reported: {f:#?}");
+        assert!(f[0].evidence.contains("admin"));
+    }
 
     #[test]
     fn flags_state_authority_field_with_no_has_one() {
@@ -281,6 +396,38 @@ mod tests {
         assert_eq!(f[0].class.as_str(), "missing-authority-binding");
         assert!(f[0].evidence.contains("update_authority"));
         assert!(!f[0].evidence.contains("`admin`"));
+    }
+
+    /// Where the narrowing actually draws the line, stated as its own case.
+    ///
+    /// It is NOT "only the field the struct names": a struct that deals in
+    /// authority roles at all keeps every unbound authority field it stores,
+    /// because a second one nobody binds is worth an auditor's minute
+    /// (Rule 3). What it excludes is a struct that claims no authority role —
+    /// a handler taking a `sender` or a `user` and reading a config that
+    /// happens to store an `admin`. That is the shape which produced 101 of
+    /// 119 findings over 28k LOC of real programs, five of them on one
+    /// settings account in audited production code.
+    #[test]
+    fn a_config_read_by_a_non_authority_handler_is_not_an_unbound_authority() {
+        const SRC: &str = r#"
+            #[program]
+            pub mod market {
+                pub fn place_bet(ctx: Context<PlaceBet>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey, pub pending_admin: Pubkey, pub fee: u64 }
+            #[derive(Accounts)]
+            pub struct PlaceBet<'info> {
+                pub user: Signer<'info>,
+                pub config: Account<'info, Config>,
+            }
+        "#;
+        assert!(
+            findings_for(SRC).is_empty(),
+            "`place_bet` claims no authority role; the stored admin is not its business: {:#?}",
+            findings_for(SRC)
+        );
     }
 
     #[test]

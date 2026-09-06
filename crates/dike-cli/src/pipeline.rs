@@ -80,6 +80,7 @@ mod tests {
             } else {
                 vec![]
             },
+            subject: None,
         }
     }
 

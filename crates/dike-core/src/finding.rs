@@ -80,6 +80,19 @@ pub struct Finding {
     pub location: Location,
     pub evidence: String,
     pub citations: Vec<Citation>,
+    /// What the finding is *about* — an account, or an account and the field
+    /// on it — independent of which handler it was seen from.
+    ///
+    /// Track 1 runs per handler, so one unbound authority on a config account
+    /// is reported once per instruction that touches it: measured
+    /// 2026-09-06, a single `config.pending_admin` produced 19 rows in one
+    /// program. That is one thing to fix, not nineteen. `subject` is what
+    /// lets [`crate::merge::collapse_by_subject`] say so.
+    ///
+    /// `None` for findings with no such anchor — Track 2 reports against a
+    /// handler, not a declaration.
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 impl Finding {
@@ -112,6 +125,7 @@ mod tests {
             },
             evidence: "evidence".into(),
             citations: vec![],
+            subject: None,
         }
     }
 

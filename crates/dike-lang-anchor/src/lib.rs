@@ -61,6 +61,11 @@ pub fn analyze_program(tree: &SourceTree) -> AnchorAnalysis {
         findings.extend(kept);
     }
 
+    // Detectors run per handler, so one unbound authority on a shared config
+    // account arrives once per instruction that takes it. Collapse before
+    // ranking: the row that survives names the handlers it absorbed, so the
+    // repetition goes and the information does not.
+    let mut findings = dike_core::merge::collapse_by_subject(findings);
     dike_core::merge::rank(&mut findings);
 
     AnchorAnalysis {
