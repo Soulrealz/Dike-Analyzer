@@ -43,6 +43,19 @@ pub struct LlmRequest {
     pub user: String,
     pub temperature: f32,
     pub timeout: Duration,
+    /// A JSON Schema the reply must satisfy, or `None` for free-form text.
+    ///
+    /// Backend-neutral on purpose: this is the *schema*, not any backend's
+    /// spelling of it. Ollama takes it as `format`, Gemini as
+    /// `generationConfig.responseSchema` alongside a JSON mime type, and a
+    /// backend that cannot constrain decoding at all is free to ignore it —
+    /// the parser and the one retry still stand behind it.
+    ///
+    /// Why it exists: measured 2026-09-06, 24 of 80 Track 2 units were
+    /// dropped because the model answered a review request with an essay,
+    /// and answered the retry with JSON in a schema of its own invention.
+    /// A prompt cannot fix that; it is not a matter of instruction-following.
+    pub response_schema: Option<serde_json::Value>,
 }
 
 impl LlmRequest {
@@ -52,7 +65,14 @@ impl LlmRequest {
             user: user.into(),
             temperature: 0.0,
             timeout: DEFAULT_TIMEOUT,
+            response_schema: None,
         }
+    }
+
+    /// Constrain the reply to `schema`.
+    pub fn with_response_schema(mut self, schema: serde_json::Value) -> Self {
+        self.response_schema = Some(schema);
+        self
     }
 }
 

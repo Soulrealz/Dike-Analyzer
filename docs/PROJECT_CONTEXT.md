@@ -73,12 +73,48 @@ found that on its first run, which is what it is for.
 expressions were added to the clean fixture so `strip_constraint` has sites;
 before that, `removed-guard` — the one Track-2-only class — had never had a
 single case, and its `0.000` was indistinguishable from a class that ran and
-found nothing. Every other class holds its previous count and score exactly.
+found nothing. Every other class holds its previous count and score exactly,
+and the re-scored 19-case run is appended to `benchmarks/history.json` as a
+second entry (0 refused by the validity gate, noise floor 0 over 166 LOC).
 `removed-guard` still scores 0.000 on Track 1 *by design*: there is no Track 1
 detector for it, and the class exists to be measured by Track 2, which has not
 been scored yet.
 
-443 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+**First Track 2 runs (2026-09-06, three entries in `benchmarks/history.json`):**
+Track 2 has been scored. `model` is `ollama/qwen2.5-coder:14b` and `corpus_hash`
+is non-null on all three, so the track genuinely ran, and the `llm` rows differ
+from the `static` rows, so Track 1 findings are not leaking across.
+
+| Run | Change | Units dropped | Best `llm` recall |
+|---|---|---:|---|
+| `…14:25:22…-all` | as built | 36 / 80 | `missing-owner-check` 0.500 |
+| `…14:43:48…-all` | JSON extractor fixed, `removed-guard` added to the prompt | 24 / 80 | `missing-owner-check` 0.500 |
+| `…20:48:35…-all` | reply constrained to a JSON Schema | **0 / 80** | **none — every class 0.000** |
+
+**The honest reading: the plumbing is fixed and Track 2 still finds almost
+nothing.** A dropped unit is one the model was never scored on, and it is
+invisible in the table — it looks exactly like a miss — so the first two runs
+could not distinguish "the model missed it" from "the model was never asked
+properly". Now they can, and the answer is that Track 2's recall is genuinely
+near zero on this fixture.
+
+**Do not read the 0.500 → 0.000 as the schema causing harm.** That is a change
+of two detections out of four cases, well inside what 19 mutants of one program
+can resolve, and a live probe (2026-09-06, `qwen2.5-coder:14b`) shows the
+schema does not degrade the model on a grounded, clearly vulnerable handler: with
+no `format` it emitted two correct `missing-owner-check` findings and with the
+schema one correct consolidated finding, both cited to the offered `doc_id`. The
+unconstrained reply was also **truncated by `MAX_OUTPUT_TOKENS`** mid-array,
+which is itself a drop. More cases is the answer here, not a revert.
+
+What the probes did surface, on the real retriever rather than a hand-written
+document: Track 2 returns an empty array for most units, and the one finding it
+did produce on `leaky_vault` was classed `pitfall` — not the vocabulary — and
+cited a **URL** rather than an offered `doc_id`, so the grounding filter (D12)
+correctly dropped it. Retrieval and citation discipline, not output format, are
+where Track 2 is losing.
+
+451 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -584,6 +620,65 @@ real constraint. Ordinary choices need no justification.
   skimmed, because a caveat in a document is something a downstream summary can
   drop and a line in the output is not.
 
+- **`LlmRequest` carries a JSON Schema, and the backends spell it differently.**
+  A prompt cannot make a model emit a shape. Measured 2026-09-06: with
+  "Return ONLY a JSON array. No prose before or after it, no code fences." in
+  capitals in the prompt, `qwen2.5-coder:14b` answered a review request with a
+  multi-section essay about what the handler does, and answered the single
+  retry with a JSON array in a schema of its own invention (`instruction`,
+  `description`, `constraints`). 24 of 80 units died that way. `LlmRequest`
+  now has `response_schema`, and Ollama sends it as `format`, Gemini as
+  `generationConfig.responseSchema` alongside `responseMimeType`. The field
+  holds the *schema*, never a backend's encoding of it, because the whole
+  point of the seam is that Track 2 never names a backend.
+
+  Three consequences worth knowing:
+  - The schema comes from `structured::findings_schema()`, next to
+    `RawLlmFinding` itself. A hand-copied schema drifts from the struct, and
+    a drifted schema is worse than none: the model is then *constrained* to
+    emit something the parser rejects, and it reads as a model failure.
+  - `class` is a plain string in it, not an `enum`. The vocabulary is domain
+    knowledge that does not live in `dike-core`, and the prompt deliberately
+    lets the model invent a label when nothing fits (Rule 3).
+  - It is sent only when asked. `format` switches Ollama to constrained
+    decoding, so an unconditional one would impose JSON on every caller of
+    the seam, including callers that want prose.
+
+- **The JSON extractor takes every balanced `[...]` span, not the first `[` to
+  the last `]`.** The old rule assumed the first bracket in a reply opens the
+  findings array. It does not: a 14B model writes prose, and prose about Anchor
+  code is full of brackets — `seeds = [b"vault", vault.admin.as_ref()]` inside a
+  fenced Rust block is a balanced span that `strip_code_fences` happily leaves
+  behind. The old span began there and serde reported `expected value at line 1
+  column 2` — column 2 being the character right after a `[`, which is the
+  signature of the bug. Where the stray bracket opened a real array of something
+  that was not a finding, the span swallowed both arrays and the error was
+  ``missing field `class` `` instead. Those were the *only* two errors the
+  2026-09-06 eval logged, 34 and 36 times. The replacement scans balanced,
+  string-aware spans and takes the one parsing into the **most** findings —
+  most rather than first because the prompt tells the model `[]` is a valid
+  answer, so a reply that muses "I would return `[]` if nothing applied" before
+  its real answer contains two parseable arrays, and taking the first reports a
+  clean bill of health the model never gave (Rule 3).
+
+- **The Track 2 prompt must offer every class the tool speaks, and now a test
+  says so.** The prompt calls its class list "the vocabulary the rest of the
+  tool speaks" and nothing enforced it. `removed-guard` — the one Track-2-only
+  class, the class Track 2 exists to justify — was missing from it, so its 0/3
+  in the first scored Track 2 run was guaranteed before the model read a line of
+  code. `llm_analyzer::tests::the_prompt_offers_every_class_the_tool_speaks`
+  fails on exactly that drift. This is the same family as the free-form-label
+  gap below: `Finding::merge_key` is `(handler_id, class)`, so a class the
+  prompt omits can neither be reported nor corroborate a Track 1 finding.
+
+- **The CLI honours `RUST_LOG`; `tracing_subscriber::fmt().init()` does not.**
+  The builder's default filter is a fixed INFO that ignores the environment
+  entirely, which silently swallowed the `debug!` carrying the model reply that
+  failed the schema — the only evidence that distinguishes "the extractor took
+  the wrong span" from "the model answered in prose". Both look identical in the
+  `warn!`. `tracing-subscriber` therefore carries the `env-filter` feature, and
+  `RUST_LOG=dike_core=debug dike analyze <path> --llm` prints failing replies.
+
 - **The fixture's `constraint = ...` expressions live on the `vault` account,
   not on the accounts they talk about.** `constraint = vault_token_account.owner
   == vault.key()` reads as if it belongs on `vault_token_account`, and putting it
@@ -654,6 +749,33 @@ notes and *is* committed.
   what a missing PDA constraint looks like in code that compiles — and it moves
   a pinned confidence, so it invalidates the history series and belongs in its
   own change.
+- **Track 2 cites URLs instead of `doc_id`s, and still invents class labels.**
+  Observed 2026-09-06 on `leaky_vault` with the real retriever: the one finding
+  the model produced was classed `pitfall` and cited
+  `https://docs.solana.com/...` rather than the `doc_id` the prompt offered, so
+  the grounding filter (D12) dropped it — correctly, and silently as far as the
+  report is concerned. Both halves are prompt-and-schema problems with a
+  measurable cost: a URL citation can never match an offered document, and
+  `Finding::merge_key` is `(handler_id, class)`, so an invented label can never
+  corroborate a Track 1 finding. A schema `enum` on `class` would forbid the
+  latter outright but also forbids the honest "none of these fit" the prompt
+  deliberately allows (Rule 3) — that trade is unresolved.
+- **`MAX_OUTPUT_TOKENS` (1024) truncates verbose replies mid-array.** Seen
+  directly in a 2026-09-06 probe: unconstrained, `qwen2.5-coder:14b` wrote a
+  two-finding reply that ran out of tokens inside the second `citations` list.
+  Truncation is a schema violation, which costs a retry and then a drop — the
+  cap is doing its job against runaway generation (2026-09-01) but it also
+  silently costs findings on legitimately long replies. Constrained decoding
+  makes replies much more compact, which is a second reason to keep it.
+- **Track 2's numbers are still a floor, but no longer a plumbing floor.**
+  Until 2026-09-06 nothing constrained the model's output format and up to 36 of
+  80 units were dropped before scoring — invisible in the table, where a dropped
+  unit looks exactly like a miss. `LlmRequest::response_schema` closed that: the
+  drop count is now 0. What remains genuinely unknown is whether retrieval is
+  the next bottleneck. Track 2 retrieves once per handler on a query built from
+  the whole handler description, and a clean handler and a vulnerable one return
+  nearly the same hits. Retrieving once per *concern* is the next thing to try,
+  and it is now measurable rather than a matter of taste.
 - **`removed-guard` now has cases but still has no number.** The clean fixture
   grew three `constraint = ...` expressions on 2026-09-06 so `strip_constraint`
   has sites at all — before that the class had never produced a single mutant,
@@ -703,6 +825,8 @@ notes and *is* committed.
 | Add a CLI subcommand | `crates/dike-cli/src/main.rs` + `commands/` |
 | Change the embedding host or model default | `DEFAULT_OLLAMA_HOST` / `DEFAULT_EMBED_MODEL` in `crates/dike-cli/src/commands/corpus.rs` — the only defaults in the project |
 | Swap the generation model or backend | `crates/dike-core/src/llm/` — implement `LlmClient`, or pass a different model string; the pipeline holds a `Box<dyn LlmClient>` |
+| Change what shape Track 2 must reply in | `crates/dike-core/src/llm/structured.rs` — `findings_schema()` and `RawLlmFinding` change together; each backend translates it in its own `complete` |
+| See why Track 2 dropped a unit | `RUST_LOG=dike_core=debug dike analyze <path> --llm` — prints the reply that failed the schema, which the `warn!` alone cannot tell you |
 | Add a corpus source | `corpus/sources.toml` — set `include_paths` for any repository whose Markdown is mostly not corpus material |
 | Know when to re-fetch the corpus | The refresh rule at the top of `corpus/sources.toml` |
 | Swap the embedding model | It is configuration, not a constant — pass host/model to `OllamaEmbedder::new`; defaults live in the CLI |

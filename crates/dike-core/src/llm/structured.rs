@@ -40,33 +40,166 @@ pub struct RawLlmFinding {
     pub citations: Vec<String>,
 }
 
+/// The JSON Schema a Track 2 reply must satisfy.
+///
+/// Mirrors [`RawLlmFinding`] exactly, because a schema that drifts from the
+/// struct is worse than none: the model is then constrained to emit something
+/// the parser rejects, and the failure looks like a model problem.
+///
+/// `class` is a plain string, deliberately. The class vocabulary is domain
+/// knowledge and does not live in this crate; the prompt lists it, and the
+/// prompt also tells the model it may invent a label when nothing fits, which
+/// a schema `enum` would forbid outright (Rule 3 — a finding under an
+/// unexpected label is still a finding, and merging is where labels are
+/// reconciled).
+///
+/// `line` is nullable rather than optional: the prompt asks the model not to
+/// guess a line, and a schema that lets the field be omitted invites a model
+/// to drop it instead of saying `null` — the same answer as missing data.
+pub fn findings_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "class": { "type": "string" },
+                "severity": {
+                    "type": "string",
+                    "enum": ["critical", "high", "medium", "low", "info"]
+                },
+                "confidence": { "type": "number" },
+                "handler": { "type": "string" },
+                "line": { "type": ["integer", "null"] },
+                "evidence": { "type": "string" },
+                "citations": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["class", "severity", "confidence", "handler", "evidence", "citations"]
+        }
+    })
+}
+
 /// The reply did not match the schema. The message is fed back to the model
 /// on the single retry, so it must describe what was wrong.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaViolation(pub String);
 
 /// Parse a model reply into findings, tolerating fences and surrounding prose.
+///
+/// Every balanced `[...]` span in the reply is a candidate, and the one that
+/// parses into the MOST findings wins. Both halves of that rule are load
+/// bearing, and both were learned from the 2026-09-06 Track 2 eval, which
+/// dropped 36 of 80 units:
+///
+/// - *Every* span, not the first `[` to the last `]`. A 14B model writes
+///   "the documents [doc_id: doc-01] support…" and puts a bracket in the
+///   prose ahead of the array; the old span then began at that bracket and
+///   serde reported `expected value at line 1 column 2` — column 2 being the
+///   character right after a `[`, the signature of the bug. When the stray
+///   bracket opened a real array of something that was not a finding, the
+///   span swallowed both arrays and serde reported ``missing field `class` ``
+///   instead. Those were the only two errors the eval logged, 34 and 36
+///   times.
+/// - The *most* findings, not the first that parses (Rule 3, recall over
+///   precision). The prompt tells the model `[]` is a valid answer, so a
+///   reply that muses "I would return [] if nothing applied" before its real
+///   answer contains two parseable arrays, and taking the first would report
+///   a clean bill of health the model never gave.
+///
+/// A finding's own `citations` array is never a candidate: spans are scanned
+/// left to right and the scanner jumps past each one it closes, so nested
+/// arrays are inside a candidate rather than beside it.
 pub fn parse_findings(raw: &str) -> Result<Vec<RawLlmFinding>, SchemaViolation> {
-    let candidate = extract_json_array(raw)
-        .ok_or_else(|| SchemaViolation("no JSON array found in the response".to_string()))?;
-    serde_json::from_str::<Vec<RawLlmFinding>>(&candidate)
-        .map_err(|e| SchemaViolation(format!("JSON did not match the schema: {e}")))
+    let text = strip_code_fences(raw);
+    let spans = array_spans(&text);
+    if spans.is_empty() {
+        return Err(SchemaViolation("no JSON array found in the response".to_string()));
+    }
+
+    let mut best: Option<Vec<RawLlmFinding>> = None;
+    let mut widest_err: Option<(usize, String)> = None;
+    for span in spans {
+        let width = span.len();
+        match serde_json::from_str::<Vec<RawLlmFinding>>(&text[span]) {
+            Ok(found) => {
+                if best.as_ref().is_none_or(|b| found.len() > b.len()) {
+                    best = Some(found);
+                }
+            }
+            Err(e) => {
+                // Report the widest candidate's error, not the last one: the
+                // widest is the likeliest to be the array the model meant,
+                // and this message is what the retry feeds back to it.
+                if widest_err.as_ref().is_none_or(|(w, _)| width > *w) {
+                    widest_err = Some((width, e.to_string()));
+                }
+            }
+        }
+    }
+
+    match (best, widest_err) {
+        (Some(found), _) => Ok(found),
+        (None, Some((_, e))) => Err(SchemaViolation(format!("JSON did not match the schema: {e}"))),
+        (None, None) => Err(SchemaViolation("no JSON array found in the response".to_string())),
+    }
 }
 
-/// Find the JSON array in a reply.
+/// Every balanced `[...]` span in `text`, left to right and non-overlapping.
 ///
-/// Fences are stripped first, then the span from the first `[` to the last
-/// `]` is taken. Taking the *last* `]` rather than the first matters: a
-/// finding's own `citations` array closes before the outer one does, so
-/// stopping at the first close would truncate every multi-finding reply.
-fn extract_json_array(raw: &str) -> Option<String> {
-    let without_fences = strip_code_fences(raw);
-    let start = without_fences.find('[')?;
-    let end = without_fences.rfind(']')?;
-    if end < start {
-        return None;
+/// String-aware: a `[`, `]` or `"` inside a JSON string is text, not
+/// structure, and `\"` inside a string does not end it. An unbalanced `[`
+/// (a reply truncated mid-array) yields no span and is skipped, so a
+/// truncated reply is a violation rather than a partial finding.
+fn array_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        match close_of_array(bytes, i) {
+            Some(end) => {
+                spans.push(i..end + 1);
+                i = end + 1;
+            }
+            None => i += 1,
+        }
     }
-    Some(without_fences[start..=end].to_string())
+    spans
+}
+
+/// The index of the `]` closing the array that opens at `open`, or `None` if
+/// it never closes.
+fn close_of_array(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut i = open;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            match c {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return if c == b']' { Some(i) } else { None };
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Remove ```` ``` ```` fences, keeping their contents.
@@ -97,9 +230,20 @@ pub fn complete_structured(
 ) -> Result<Vec<RawLlmFinding>, LlmError> {
     let first = client.complete(req)?;
     let violation = match parse_findings(&first) {
-        Ok(findings) => return Ok(findings),
+        Ok(findings) => {
+            tracing::debug!(count = findings.len(), "the model's reply parsed");
+            return Ok(findings);
+        }
         Err(v) => v,
     };
+    // The violation message alone cannot tell you WHY a reply failed — the
+    // 2026-09-06 eval spent two runs on that. `expected value at line 1
+    // column 2` was a prose reply with a bracket in it both before and after
+    // the extractor was fixed; only the reply itself distinguishes "the
+    // extractor took the wrong span" from "the model answered in prose".
+    // Debug level, because a reply is large and this is diagnosis, not
+    // operation: `RUST_LOG=dike_core=debug`.
+    tracing::debug!(reply = %first, "the reply that failed the schema");
     tracing::warn!(violation = %violation.0, "model reply failed the schema; retrying once");
 
     let mut retry = req.clone();
@@ -108,6 +252,7 @@ pub fn complete_structured(
     match parse_findings(&second) {
         Ok(findings) => Ok(findings),
         Err(v) => {
+            tracing::debug!(reply = %second, "the retry that failed the schema");
             // Drop and log. A third attempt would spend another 120-second
             // budget on a model that has now failed the same schema twice.
             tracing::warn!(
@@ -146,6 +291,17 @@ pub fn validate_citations(
         .collect();
 
     if citations.is_empty() {
+        // The grounding filter (D12) is silent by design in the report — an
+        // ungrounded finding is not a finding. But "the model found nothing"
+        // and "everything it found cited a document that was never offered"
+        // are opposite diagnoses that look identical from outside, and the
+        // 2026-09-06 eval needed to tell them apart.
+        tracing::debug!(
+            class = %f.class,
+            handler = %f.handler,
+            cited = ?f.citations,
+            "dropping an uncited finding: no citation named a document that was offered"
+        );
         return None;
     }
 
@@ -389,6 +545,82 @@ mod tests {
     #[test]
     fn rejects_a_json_object_that_is_not_an_array() {
         assert!(parse_findings("{\"class\":\"c\"}").is_err());
+    }
+
+    /// The schema is only worth sending if it describes the struct the parser
+    /// actually wants. A schema that drifts constrains the model to emit
+    /// something `parse_findings` then rejects — a worse failure than no
+    /// schema at all, because it looks like the model's fault.
+    #[test]
+    fn the_schema_requires_exactly_the_fields_the_parser_requires() {
+        let schema = findings_schema();
+        let required: Vec<&str> = schema["items"]["required"]
+            .as_array()
+            .expect("required list")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for field in ["class", "severity", "confidence", "handler", "evidence"] {
+            assert!(required.contains(&field), "`{field}` is required by the parser: {required:?}");
+        }
+        let props = schema["items"]["properties"].as_object().expect("properties");
+        assert!(props.contains_key("line"), "the parser reads `line`");
+
+        // The proof that the two agree: a reply shaped by the schema parses.
+        let shaped = r#"[{"class":"c","severity":"high","confidence":0.5,
+                          "handler":"h","line":null,"evidence":"e","citations":["doc-01"]}]"#;
+        parse_findings(shaped).expect("a reply matching the schema must parse");
+    }
+
+    /// Observed on the 2026-09-06 Track 2 eval: 36 of 80 units were dropped,
+    /// 34 of them with `expected value at line 1 column 2`. That column is the
+    /// character right after a `[`, which is the signature of this bug —
+    /// the old extraction took the FIRST `[` in the reply, and a 14B model
+    /// writing a sentence like "the documents [doc_id: doc-01] support"
+    /// puts a bracket in the prose before the array ever starts.
+    ///
+    /// Recall-critical: the array here is perfectly good and was thrown away
+    /// whole, so this is silent lost recall, not a malformed finding.
+    #[test]
+    fn a_bracket_in_the_prose_does_not_capture_the_parse() {
+        let raw = "Reviewing against [doc_id: doc-01] and the guidance above.\n\n\
+                   [{\"class\":\"missing-signer\",\"severity\":\"high\",\"confidence\":0.8,\
+                   \"handler\":\"withdraw\",\"line\":12,\"evidence\":\"no signer\",\
+                   \"citations\":[\"doc-01\"]}]";
+        let out = parse_findings(raw).expect("the array after the prose bracket must be found");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].class, "missing-signer");
+    }
+
+    /// The same root cause on the retry, which is why 36 units failed twice:
+    /// when the stray `[` opens an array of something that is not a finding,
+    /// the span from it to the last `]` swallows both arrays and serde reports
+    /// `missing field \`class\`` — the second error the eval logged, 36 times.
+    #[test]
+    fn an_unrelated_json_array_before_the_findings_does_not_capture_the_parse() {
+        let raw = "Documents considered:\n\
+                   [{\"doc_id\":\"doc-01\",\"title\":\"Signer checks\"}]\n\n\
+                   Findings:\n\
+                   [{\"class\":\"missing-owner-check\",\"severity\":\"high\",\"confidence\":0.7,\
+                   \"handler\":\"deposit\",\"line\":null,\"evidence\":\"unchecked\",\
+                   \"citations\":[\"doc-01\"]}]";
+        let out = parse_findings(raw).expect("the findings array must be found");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].class, "missing-owner-check");
+    }
+
+    /// Rule 3, recall over precision: when the reply contains more than one
+    /// array that parses, the empty one must not win. A model that writes
+    /// "I would return [] if nothing applied" before its real answer would
+    /// otherwise score as a clean bill of health.
+    #[test]
+    fn an_empty_array_in_the_prose_does_not_beat_the_real_findings() {
+        let raw = "If nothing applied I would return []. It does apply:\n\
+                   [{\"class\":\"missing-signer\",\"severity\":\"high\",\"confidence\":0.9,\
+                   \"handler\":\"withdraw\",\"line\":3,\"evidence\":\"no signer\",\
+                   \"citations\":[\"doc-01\"]}]";
+        let out = parse_findings(raw).expect("parse");
+        assert_eq!(out.len(), 1, "the empty prose array must not win: {out:?}");
     }
 
     #[test]

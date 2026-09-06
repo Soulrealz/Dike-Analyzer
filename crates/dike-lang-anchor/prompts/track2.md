@@ -45,3 +45,7 @@ reached by other means:
 - `pda-validation-gap` — a program-derived address is used without validating its
   seeds or bump.
 - `unchecked-arithmetic` — arithmetic that can overflow or underflow is not checked.
+- `removed-guard` — a validation the handler needs is simply absent: an
+  `#[account(...)]` list with no `constraint = ...` binding an account to the
+  thing it must match, or a handler body missing a `require!` its own logic
+  depends on. No other label fits a guard that is not there.

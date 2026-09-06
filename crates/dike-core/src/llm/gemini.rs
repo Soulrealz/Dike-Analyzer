@@ -57,11 +57,20 @@ impl LlmClient for GeminiClient {
     }
 
     fn complete(&self, req: &LlmRequest) -> Result<String, LlmError> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "system_instruction": { "parts": [{ "text": req.system }] },
             "contents": [{ "parts": [{ "text": req.user }] }],
             "generationConfig": { "temperature": req.temperature },
         });
+        // Gemini spells the same constraint differently: the schema goes in
+        // `generationConfig`, and it only takes effect alongside a JSON mime
+        // type. This is why `LlmRequest` carries the schema rather than any
+        // one backend's encoding of it.
+        if let Some(schema) = &req.response_schema {
+            body["generationConfig"]["responseMimeType"] =
+                serde_json::Value::String("application/json".to_string());
+            body["generationConfig"]["responseSchema"] = schema.clone();
+        }
         let resp = self
             .http
             .post_json_with(

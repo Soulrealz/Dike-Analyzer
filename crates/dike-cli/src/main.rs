@@ -155,7 +155,18 @@ enum CorpusCommand {
 }
 
 fn main() -> std::process::ExitCode {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    // INFO by default, `RUST_LOG` when set. The builder's own default filter
+    // is a fixed INFO that ignores `RUST_LOG` entirely, which silently
+    // swallowed the `debug!` carrying the model reply that failed the schema
+    // — the one piece of evidence that says why Track 2 dropped a unit
+    // (`RUST_LOG=dike_core=debug dike analyze <path> --llm`).
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Analyze {

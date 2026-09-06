@@ -111,7 +111,11 @@ impl Analyzer for LlmAnalyzer {
                 continue;
             }
 
-            let mut req = LlmRequest::new(SYSTEM_PROMPT, build_user_prompt(unit, &hits));
+            // The schema comes from the parser rather than being written out
+            // here: a hand-copied schema drifts from `RawLlmFinding`, and the
+            // model is then constrained to emit something the parser rejects.
+            let mut req = LlmRequest::new(SYSTEM_PROMPT, build_user_prompt(unit, &hits))
+                .with_response_schema(dike_core::llm::structured::findings_schema());
             req.temperature = 0.0;
 
             let raws = match complete_structured(self.client.as_ref(), &req) {
@@ -607,5 +611,56 @@ pub struct W<'info> {
         assert!(result.findings.is_empty());
         let u = result.units.unwrap();
         assert_eq!(u.examined, u.total, "the model did review these units");
+    }
+
+    /// Track 2 must constrain the model's output shape, not merely ask for it.
+    /// Measured 2026-09-06: 24 of 80 units were dropped because
+    /// `qwen2.5-coder:14b` answered a review request with a prose essay and
+    /// answered the retry with JSON in a schema of its own invention. The
+    /// prompt already said "Return ONLY a JSON array" in capitals; the schema
+    /// is the part the model cannot decline.
+    #[test]
+    fn the_request_constrains_the_reply_to_the_findings_schema() {
+        let client = RecordingClient::with(one_finding_json("withdraw"));
+        let _ = LlmAnalyzer::new(
+            Box::new(client.clone()),
+            Box::new(StubRetriever::grounded()),
+            5,
+        )
+        .analyze(&fixture_tree());
+
+        let sent = &client.requests()[0];
+        assert_eq!(
+            sent.response_schema.as_ref(),
+            Some(&dike_core::llm::structured::findings_schema()),
+            "the request must carry the parser's own schema, not a hand-written copy"
+        );
+    }
+
+    /// The prompt tells the model these labels are "the vocabulary the rest of
+    /// the tool speaks". Nothing enforced that claim, and it was false: the
+    /// 2026-09-06 Track 2 run scored `removed-guard` at 0/3 partly because the
+    /// prompt never offered the label, so the model could not have used it.
+    /// `Finding::merge_key` is `(handler_id, class)`, so a class the prompt
+    /// omits cannot corroborate a Track 1 finding either (D4).
+    ///
+    /// This fails if a class constant is added to `detectors` and not to the
+    /// prompt — the drift that produced the bug.
+    #[test]
+    fn the_prompt_offers_every_class_the_tool_speaks() {
+        for class in [
+            crate::detectors::MISSING_SIGNER,
+            crate::detectors::MISSING_OWNER_CHECK,
+            crate::detectors::MISSING_AUTHORITY_BINDING,
+            crate::detectors::PDA_VALIDATION_GAP,
+            crate::detectors::UNCHECKED_ARITHMETIC,
+            crate::detectors::REMOVED_GUARD,
+        ] {
+            assert!(
+                SYSTEM_PROMPT.contains(&format!("`{class}`")),
+                "`{class}` is a class the tool speaks but the Track 2 prompt never offers it; \
+                 the model cannot report a label it was not given"
+            );
+        }
     }
 }

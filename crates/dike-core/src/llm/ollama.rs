@@ -37,7 +37,7 @@ impl OllamaClient {
     /// The request body, separated from the call so its shape is testable
     /// without a server.
     fn request_body(&self, req: &LlmRequest) -> serde_json::Value {
-        serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "system": req.system,
             "prompt": req.user,
@@ -46,7 +46,14 @@ impl OllamaClient {
                 "temperature": req.temperature,
                 "num_predict": MAX_OUTPUT_TOKENS,
             },
-        })
+        });
+        // Only when asked. `format` switches Ollama to constrained decoding,
+        // so sending it unconditionally would impose JSON on every caller of
+        // this seam, including the ones that want prose.
+        if let Some(schema) = &req.response_schema {
+            body["format"] = schema.clone();
+        }
+        body
     }
 }
 
@@ -87,7 +94,30 @@ mod tests {
             user: "u".into(),
             temperature: 0.0,
             timeout: std::time::Duration::from_millis(500),
+            response_schema: None,
         }
+    }
+
+    /// Ollama constrains decoding to a JSON Schema passed as `format`. Without
+    /// it the 2026-09-06 eval lost 24 of 80 units to a model that answered a
+    /// review request with an essay, then answered the retry with JSON in a
+    /// schema of its own invention — a failure no prompt wording fixes.
+    #[test]
+    fn a_response_schema_is_sent_as_ollamas_format_field() {
+        let c = OllamaClient::new("http://127.0.0.1:1", "m").unwrap();
+        let schema = crate::llm::structured::findings_schema();
+        let body = c.request_body(&req().with_response_schema(schema.clone()));
+        assert_eq!(body["format"], schema, "the schema must reach the server");
+    }
+
+    /// A free-form request must not acquire a format constraint by accident:
+    /// `format` changes how Ollama decodes, so sending it unconditionally
+    /// would make every caller of this seam a JSON caller.
+    #[test]
+    fn no_schema_means_no_format_field() {
+        let c = OllamaClient::new("http://127.0.0.1:1", "m").unwrap();
+        let body = c.request_body(&req());
+        assert!(body.get("format").is_none(), "{body}");
     }
 
     #[test]
@@ -149,6 +179,7 @@ mod tests {
                 user: "Say OK.".into(),
                 temperature: 0.0,
                 timeout: std::time::Duration::from_secs(120),
+                response_schema: None,
             })
             .unwrap();
         assert!(!out.trim().is_empty());
