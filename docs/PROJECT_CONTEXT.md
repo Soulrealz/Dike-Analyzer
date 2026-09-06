@@ -813,6 +813,34 @@ notes and *is* committed.
   wanted per-declaration rows would need the accounts struct's own file on the
   finding.
 
+  **A detector whose key is a constant must set `subject = None`.**
+  `arithmetic.rs` passes the literal `"arithmetic"` to `finding_at` — it is an
+  id seed, not an anchor — so every handler's arithmetic finding shared one
+  subject and the collapse folded `deposit`'s and `withdraw`'s into a single
+  row. That class is handler-scoped: there is no "same thing seen from several
+  handlers" to collapse. Caught by
+  `end_to_end::analysis_is_byte_stable_across_runs`, which needs one arithmetic
+  finding in each handler. The rule for any new detector: `subject` is an
+  anchor that is meaningful ACROSS handlers, or it is `None`.
+
+- **The holdout holds six verified cases (2026-09-06), and scoring it is still
+  unimplemented.** Populated from two public Solana audit contests (WOOFi,
+  Orderly — accepted findings only, not the rejected and duplicate submissions
+  those judging repos also carry) plus the Cashio infinite-mint, whose fix
+  commit adds the one missing `assert_keys_eq!`. Every commit hash was resolved
+  against the repository and every path and handler read at that commit, with
+  Dike run over each program to confirm it parses before the case was written.
+  Six rather than the 15–30 target because the intersection of "published
+  finding" × "Anchor program" × "resolvable public commit" is genuinely small:
+  the most-cited Solana disclosures are native programs, which yield zero
+  handlers and would measure the parser's scope rather than detector recall.
+  **A conflict to settle before the single scored run:** the collapse above
+  reports one row per `(class, subject)` while the holdout compares per handler
+  (D5) — verified on the WOOFi case, where Dike finds the defect but reports it
+  under a different handler with the real one among 17 absorbed. The scorer
+  must match absorbed handlers too, or the collapse must become
+  presentation-only.
+
 - **First measurement on real programs (2026-09-06): 119 findings over 28,247
   LOC of production Anchor code — but only 31 distinct sites.** Track 1 was run
   over 12 real programs (a production cross-chain messaging stack plus four

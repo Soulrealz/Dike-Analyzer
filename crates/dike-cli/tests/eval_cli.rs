@@ -147,9 +147,19 @@ fn the_holdout_command_leads_with_the_memorization_caveat() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("CAVEAT"), "{stdout}");
     assert!(stdout.contains("pretraining data"));
-    // The scaffold ships empty on purpose: an invented commit hash would look
-    // exactly like a real case and produce a real-looking number.
-    assert!(stdout.contains("holds no cases"), "{stdout}");
+    // The holdout was populated on 2026-09-06, so "holds no cases" — what
+    // this used to assert — is no longer the invariant. The one that outlives
+    // the scaffold is that the command never lets a number be inferred from
+    // an inventory it did not score: there is still no fetch-and-score step,
+    // and saying so is the whole reason this command prints anything.
+    assert!(
+        stdout.contains("Nothing has been scored"),
+        "the command must state plainly that it scored nothing: {stdout}"
+    );
+    assert!(
+        stdout.contains("cashio-print-cash-unvalidated-crate-mint"),
+        "the inventory must name its cases, or it cannot be checked: {stdout}"
+    );
 }
 
 /// The same run with the validity gate on. Ignored by default: it builds the

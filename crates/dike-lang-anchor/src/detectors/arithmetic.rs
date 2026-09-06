@@ -39,7 +39,17 @@ impl Detector for UncheckedArithmeticDetector {
         // that compares runs over time. Findings still merge on
         // `(handler_id, class)`, never on `id` (see
         // `dike_core::Finding::merge_key`), so this is safe.
-        vec![super::finding_at(self, handler, "arithmetic", unchecked[0], evidence)]
+        let mut finding = super::finding_at(self, handler, "arithmetic", unchecked[0], evidence);
+        // No subject. `"arithmetic"` is a constant key, not an anchor: every
+        // handler's arithmetic finding would carry the identical subject, and
+        // `merge::collapse_by_subject` would fold two genuinely different
+        // defects in two different handlers into one row. This class is
+        // handler-scoped by nature — there is no "same thing seen from
+        // several handlers" here, which is the only thing collapsing is for.
+        // Caught by `end_to_end::analysis_is_byte_stable_across_runs`, which
+        // needs one arithmetic finding in each of `deposit` and `withdraw`.
+        finding.subject = None;
+        vec![finding]
     }
 }
 

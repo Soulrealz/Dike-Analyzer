@@ -38,3 +38,134 @@
 #                                           #   report as a miss
 #   severity = "critical"                   # info | low | medium | high | critical
 #   source   = "https://…/disclosure"       # the published write-up
+
+# ---------------------------------------------------------------------------
+# POPULATED 2026-09-06. Six cases. Every field below was resolved against the
+# repository, not recalled: each commit hash is the HEAD the audit or the fix
+# actually names, each path and handler was read at that commit, and Dike was
+# run over each program to confirm it parses (handler count > 0) before the
+# case was written down. Nothing here is reconstructed from memory.
+#
+# Why six and not fifteen. The intersection of "published finding" x "Anchor
+# program" x "public repo at a resolvable commit" is small:
+#   - The most-cited Solana disclosures are NATIVE programs, not Anchor.
+#     Wormhole's `verify_signatures` is the clearest example. Dike collects
+#     handlers only from a `#[program]` module (parser/mod.rs), so a native
+#     program yields zero handlers and every case in one would score as an
+#     automatic miss - measuring the parser's scope, not detector recall.
+#   - Repos disappear. Jet Protocol's `jet-v1` (a real, well-written-up Anchor
+#     bug) 404s, so its commit cannot be resolved and the case cannot be made.
+#   - Candy Machine v1's history shows a wholesale deprecation commit rather
+#     than an isolated security fix, so no single commit "contained the bug"
+#     in a way that can be pinned.
+# Six verified cases are worth more than twenty plausible ones, and this
+# file's own rule says so. Grow the set when new Anchor audit contests
+# publish.
+#
+# The Sherlock cases cite the contest's own judging repo, which mirrors the
+# audited code at the commit recorded here and publishes the judged severity.
+# Only findings the judges ACCEPTED (the `# Issue H-n/M-n` entries in the
+# judging README) are used - those repos also carry every rejected and
+# duplicate submission, and scoring against those would be scoring against
+# claims nobody validated.
+#
+# KNOWN CONFLICT with `merge::collapse_by_subject`, found while verifying
+# these and not yet resolved. Dike collapses one defect seen from several
+# handlers into a single row, naming the absorbed handlers in the evidence.
+# This holdout compares at handler granularity (D5). Verified on
+# `woofi-create-wooracle-unbound-admin`: Dike DOES report that defect, but
+# under `set_oracle_maximum_age`, with `create_wooracle` and `create_pool`
+# among 17 absorbed handlers - so a handler-granularity scorer would call it a
+# miss on a finding the tool actually made. Whoever implements scoring must
+# either match the absorbed handler list too, or make the collapse
+# presentation-only. Decide that BEFORE the one scored run: `runs.json`
+# refuses a second.
+
+[[case]]
+id       = "cashio-print-cash-unvalidated-crate-mint"
+repo     = "https://github.com/cashioapp/cashio"
+commit   = "a51c3c59d544a5763b64abb4a8d82c49b0abd6d0"
+path     = "programs/brrr/src/lib.rs"
+handler  = "print_cash"
+class    = "removed-guard"
+severity = "critical"
+source   = "https://github.com/cashioapp/cashio/commit/7df658184c2610139fa2c0058363c66b28add4c4"
+# The March 2022 infinite-mint. `BrrrCommon::validate` never checked the
+# supplied `crate_mint` against `bank.crate_mint`, so an attacker could pass a
+# mint of their own. The fix commit adds exactly one line -
+# `assert_keys_eq!(self.bank.crate_mint, self.crate_mint)` - and the commit
+# recorded above is its parent, the last commit that still contained the bug.
+# `source` is the vendor's own fix rather than a write-up on purpose: the
+# widely-linked Sec3 analysis now 404s, and citing a dead link would be citing
+# something nobody can read. rekt.news/cashio-rekt/ was reachable as a
+# secondary account of the incident.
+# Classed `removed-guard`: `crate_mint` is a typed `Account<Mint>`, so Anchor
+# proves it is *a* mint and the missing check is an identity constraint rather
+# than an owner check. Track 1 has no detector for this class by design (D16).
+
+[[case]]
+id       = "woofi-create-wooracle-unbound-admin"
+repo     = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment"
+commit   = "1c4c9c622e8c44ae2f8cd4219c7c2a0181f25ca0"
+path     = "WOOFi_Solana/programs/woofi/src/instructions/admin/create_wooracle.rs"
+handler  = "create_wooracle"
+class    = "missing-authority-binding"
+severity = "medium"
+source   = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment-judging/issues/54"
+# Judged M-2, "Missing permission control in create_oracle and create_pool".
+# `CreateWooracle` takes `admin: Signer<'info>` and carries no constraint
+# binding it to `wooconfig.authority`, so any signer may create an oracle.
+# The textbook shape of the class: a signer required, never bound.
+
+[[case]]
+id       = "woofi-create-pool-unbound-admin"
+repo     = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment"
+commit   = "1c4c9c622e8c44ae2f8cd4219c7c2a0181f25ca0"
+path     = "WOOFi_Solana/programs/woofi/src/instructions/admin/create_pool.rs"
+handler  = "create_pool"
+class    = "missing-authority-binding"
+severity = "medium"
+source   = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment-judging/issues/54"
+# The second handler named by the same judged finding (M-2). Its own case
+# because the comparison unit is the handler (D5), not the report.
+
+[[case]]
+id       = "woofi-swap-quote-pool-not-enforced"
+repo     = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment"
+commit   = "1c4c9c622e8c44ae2f8cd4219c7c2a0181f25ca0"
+path     = "WOOFi_Solana/programs/woofi/src/instructions/swap.rs"
+handler  = "swap"
+class    = "removed-guard"
+severity = "high"
+source   = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment-judging/issues/64"
+# Judged H-2. `woopool_quote` carries two constraints but neither enforces
+# that a quote pool has the same base and quote token, so a non-quote pool can
+# be passed and swap fees are deducted from it. An absent `constraint = ...`,
+# which is `removed-guard` by definition.
+
+[[case]]
+id       = "orderly-deposit-token-not-validated"
+repo     = "https://github.com/sherlock-audit/2024-09-orderly-network-solana-contract"
+commit   = "a40ed80ce4a196bc81bfa6dfb749c19b92c623b0"
+path     = "solana-vault/packages/solana/contracts/programs/solana-vault/src/instructions/vault_instr/deposit.rs"
+handler  = "deposit"
+class    = "removed-guard"
+severity = "high"
+source   = "https://github.com/sherlock-audit/2024-09-orderly-network-solana-contract-judging/issues/40"
+# Judged H-1. The `Deposit` struct never checks that `deposit_token` matches
+# `allowed_token.mint_account`, so any token could be deposited and credited
+# as the allowed one on the destination chain.
+
+[[case]]
+id       = "orderly-lz-receive-shared-vault-authority"
+repo     = "https://github.com/sherlock-audit/2024-09-orderly-network-solana-contract"
+commit   = "a40ed80ce4a196bc81bfa6dfb749c19b92c623b0"
+path     = "solana-vault/packages/solana/contracts/programs/solana-vault/src/instructions/oapp_instr/oapp_lz_receive.rs"
+handler  = "lz_receive"
+class    = "removed-guard"
+severity = "high"
+source   = "https://github.com/sherlock-audit/2024-09-orderly-network-solana-contract-judging/issues/99"
+# Judged H-2. Nothing checks that the wallet receiving a withdrawal belongs to
+# the user the withdrawal was initiated for. The handler is `lz_receive` (the
+# file is named for the `OAppLzReceive` context, not the instruction) -
+# verified against `src/lib.rs:69` at this commit.
