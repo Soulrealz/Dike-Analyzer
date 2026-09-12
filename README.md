@@ -151,7 +151,9 @@ unanswerable and would otherwise poison every precision number.
 just eval-static   # Track 1 only. No model, no network. What CI runs.
 just eval-fast     # …skipping the validity gate. For iterating, never for numbers.
 just eval          # Both tracks. Needs Ollama running and an indexed corpus.
-just holdout       # The real holdout: six cases, memorization caveat, no scorer yet.
+just holdout       # List the real holdout and its memorization caveat.
+just holdout-dry   # The scoring path, offline. Records nothing, spends no run.
+just holdout-score # THE scored run. Once, ever (spec §8). Clones each program.
 
 # Or the commands underneath:
 dike eval mutate tests/fixtures/programs/vault --out target/mutants
@@ -200,15 +202,18 @@ runs against a frontier model, never for iteration.
   zero instead of being quietly excluded, and
   `crates/dike-cli/tests/eval_cli.rs` pins it so that fixing the detector breaks
   a test rather than passing unnoticed.
-- **The holdout has six verified cases and no scorer yet.**
+- **The holdout has six verified cases and has not been scored.**
   `benchmarks/holdout/cases.toml` was populated on 2026-09-06 from two public
   Solana audit contests (WOOFi and Orderly, accepted findings only) plus the
   Cashio infinite-mint. Six rather than the 15–30 target, because the
   intersection of "published finding", "Anchor program" and "resolvable public
   commit" is small: most of the widely cited Solana disclosures are native
-  programs, which yield zero handlers. Scoring the set is still unimplemented,
-  and one conflict has to be settled first: the report collapses findings to one
-  row per `(class, subject)` while the holdout compares per handler.
+  programs, which yield zero handlers. `dike eval holdout --score` can score
+  them now, and `runs.json` is still `[]` because the set permits one run and
+  spending it is a decision, not a step. Four of the six cases are
+  `removed-guard`, which only Track 2 reports, while the scorer runs Track 1
+  only — so a run today reaches two of the six. The command says so before it
+  scores anything.
 - **`cargo fmt --check` is not a gate.** The house style is hand-formatted and no
   rustfmt configuration reproduces it, so the CI gate is `clippy`, which is
   deny-by-default here.
@@ -264,9 +269,9 @@ a live local model: on the vulnerable fixture it independently reports
 `missing-signer` on `withdraw`, which merges with Track 1's finding into a
 corroborated Critical carrying its citation.
 
-Still open: the holdout has cases but no scorer, and the CI LLM job is a build
-check rather than a scored run, because GitHub runners have no GPU and the local
-model cannot run there. See `docs/PROJECT_CONTEXT.md` for the current state in
+Still open: the holdout can be scored but has not been, and the CI LLM job is a
+build check rather than a scored run, because GitHub runners have no GPU and the
+local model cannot run there. See `docs/PROJECT_CONTEXT.md` for the current state in
 detail.
 
 ## License

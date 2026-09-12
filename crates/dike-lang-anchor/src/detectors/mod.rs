@@ -60,6 +60,7 @@ pub fn finding_at(
         // name, or `account.field` where one account carries several. That
         // is exactly the anchor duplicate rows collapse on.
         subject: Some(key.to_string()),
+        absorbed_handlers: Vec::new(),
         id,
         class: VulnClass::new(detector.class()),
         severity: detector.severity(),

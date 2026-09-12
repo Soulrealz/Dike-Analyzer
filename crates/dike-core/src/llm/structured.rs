@@ -341,6 +341,7 @@ pub fn validate_citations(
         // Track 2 reports against a handler, not a declaration: it has no
         // account/field anchor to collapse duplicates on.
         subject: None,
+        absorbed_handlers: Vec::new(),
         id,
         class: VulnClass::new(f.class),
         severity: parse_severity(&f.severity),

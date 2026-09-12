@@ -43,9 +43,19 @@ eval-fast:
 eval:
     cargo run -p dike-cli -- eval run {{fixture}} --track all
 
-# The real holdout. Touched once, at the end — see benchmarks/holdout/cases.toml.
+# List the real holdout with its memorization caveat. Scores nothing.
 holdout:
     cargo run -p dike-cli -- eval holdout
+
+# The whole scoring path against checkouts already on disk. Fetches nothing, and
+# records nothing unless a case was actually scored, so the one run stays unspent.
+holdout-dry:
+    cargo run -p dike-cli -- eval holdout --score --offline
+
+# THE scored run. Touched once, at the end (spec §8) — it clones each case's
+# repository and `runs.json` refuses a second pass. Not part of any gate.
+holdout-score:
+    cargo run -p dike-cli -- eval holdout --score
 
 # Advisory pre-push pass. `exit 0` is not defensive: dike is triage, and a
 # triage tool that blocks a push is a triage tool people uninstall.

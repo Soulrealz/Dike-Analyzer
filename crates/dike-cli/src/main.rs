@@ -88,12 +88,33 @@ enum EvalCommand {
         #[arg(long, default_value_t = 5)]
         top_k: usize,
     },
-    /// Report the real-holdout scaffold, with the memorization caveat.
+    /// List the real holdout with the memorization caveat, or score it once.
     Holdout {
+        /// Spend the one scored run this set permits (spec §8): check out each
+        /// case's program at its recorded commit, analyze it, and record the
+        /// result. Without it the command only lists the cases.
+        #[arg(long)]
+        score: bool,
         /// Score a holdout that has already been scored once. Doing so is
         /// tuning on the test set; the flag exists so that choice is explicit.
         #[arg(long)]
         force: bool,
+        /// Never fetch. Cases without a checkout already on disk are reported
+        /// as not scored rather than as misses.
+        #[arg(long)]
+        offline: bool,
+        /// Where checked-out programs live. Gitignored: these are other
+        /// people's repositories at other people's commits.
+        #[arg(long, default_value = commands::holdout::HOLDOUT_CHECKOUTS)]
+        checkout_dir: std::path::PathBuf,
+        /// The case manifest to score.
+        #[arg(long, default_value = commands::holdout::HOLDOUT_CASES)]
+        cases: std::path::PathBuf,
+        /// Where scored runs are recorded. This file is what makes the
+        /// run-once guard enforceable, so pointing it elsewhere exempts a run
+        /// from the guard — which is why the tests do it and you should not.
+        #[arg(long, default_value = commands::holdout::HOLDOUT_RUNS)]
+        runs: std::path::PathBuf,
     },
     /// Inject one vulnerability per site into a clean program and write one
     /// case directory per mutant.
@@ -226,7 +247,16 @@ fn main() -> std::process::ExitCode {
                     top_k,
                 },
             }),
-            EvalCommand::Holdout { force } => commands::eval::holdout(force),
+            EvalCommand::Holdout { score, force, offline, checkout_dir, cases, runs } => {
+                commands::holdout::holdout(commands::holdout::HoldoutOptions {
+                    score,
+                    force,
+                    offline,
+                    checkout_dir,
+                    cases_path: cases,
+                    runs_path: runs,
+                })
+            }
         },
         Command::Corpus { command } => match command {
             CorpusCommand::Fetch { update_hashes, verify } => {

@@ -147,13 +147,13 @@ fn the_holdout_command_leads_with_the_memorization_caveat() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("CAVEAT"), "{stdout}");
     assert!(stdout.contains("pretraining data"));
-    // The holdout was populated on 2026-09-06, so "holds no cases" — what
-    // this used to assert — is no longer the invariant. The one that outlives
-    // the scaffold is that the command never lets a number be inferred from
-    // an inventory it did not score: there is still no fetch-and-score step,
-    // and saying so is the whole reason this command prints anything.
+    // The invariant that outlives both the empty scaffold and the arrival of
+    // a scorer: the bare command never lets a number be inferred from an
+    // inventory it did not score, and says which flag would score it. Scoring
+    // spends the one run this set permits (spec §8), so it must never be what
+    // an exploratory `dike eval holdout` does.
     assert!(
-        stdout.contains("Nothing has been scored"),
+        stdout.contains("Nothing was scored") && stdout.contains("--score"),
         "the command must state plainly that it scored nothing: {stdout}"
     );
     assert!(

@@ -81,6 +81,7 @@ mod tests {
             evidence: "`authority` account has no signer constraint".into(),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         };
         Report {
             run: RunMetadata {

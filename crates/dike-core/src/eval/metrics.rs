@@ -291,6 +291,7 @@ mod tests {
             evidence: "evidence".into(),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 

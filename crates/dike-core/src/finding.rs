@@ -93,6 +93,17 @@ pub struct Finding {
     /// handler, not a declaration.
     #[serde(default)]
     pub subject: Option<String>,
+    /// The other handlers this row absorbed when
+    /// [`crate::merge::collapse_by_subject`] folded them into it. The same
+    /// defect is reachable from every one of them.
+    ///
+    /// Structured because the holdout scorer compares per handler (D5) while
+    /// the report shows one row per subject: without this the scorer would
+    /// have to read the absorbed handlers back out of the evidence prose, and
+    /// rewording a sentence would silently turn every hit into a miss. Sorted
+    /// and deduplicated, so it is byte-stable across runs (Rule 5).
+    #[serde(default)]
+    pub absorbed_handlers: Vec<String>,
 }
 
 impl Finding {
@@ -126,6 +137,7 @@ mod tests {
             evidence: "evidence".into(),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 

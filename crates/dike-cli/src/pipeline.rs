@@ -81,6 +81,7 @@ mod tests {
                 vec![]
             },
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 

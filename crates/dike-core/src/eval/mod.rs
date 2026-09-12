@@ -11,10 +11,15 @@
 
 pub mod differential;
 pub mod history;
+pub mod holdout;
 pub mod metrics;
 
 pub use differential::{diff_runs, CaseOutcome};
 pub use history::{append_history, read_history};
+pub use holdout::{
+    render_holdout_table, score_case, summarize_holdout, HoldoutCaseResult, HoldoutOutcome,
+    HoldoutSummary, HoldoutTarget, HOLDOUT_SCHEMA_VERSION,
+};
 pub use metrics::{
     render_table, summarize, ClassMetrics, EvalSummary, MetricTrack, NoiseFloor, SCHEMA_VERSION,
 };

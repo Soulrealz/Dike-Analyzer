@@ -128,7 +128,9 @@ where Track 2 is losing.
 ├── benchmarks/
 │   ├── history.json           The eval series: one EvalSummary per run. COMMITTED —
 │   │                           the harness exists to compare runs over time
-│   └── holdout/               The real holdout: cases.toml (six cases) + runs.json
+│   └── holdout/               The real holdout: cases.toml (six cases) + runs.json.
+│                               checkouts/ is GITIGNORED — other people's repos at
+│                               other people's commits, never redistributed here
 ├── corpus/
 │   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class
 │   │                           tags, optional include_paths, and the refresh rule
@@ -137,14 +139,17 @@ where Track 2 is losing.
 ├── crates/
 │   ├── dike-core/             Domain-AGNOSTIC. No Solana vocabulary. See "The seam".
 │   │   ├── src/
-│   │   │   ├── finding.rs     Finding, Severity, VulnClass, Track, Location, Citation
+│   │   │   ├── finding.rs     Finding, Severity, VulnClass, Track, Location, Citation;
+│   │   │   │                   subject + absorbed_handlers (the collapse's record)
 │   │   │   ├── analyzer.rs    Analyzer trait, SourceTree ingest, Diagnostic, AnalysisResult
-│   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking
+│   │   │   ├── merge.rs       Two-track merge, corroboration, deterministic ranking,
+│   │   │   │                   collapse_by_subject (one row per defect, not per handler)
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
 │   │   │   ├── eval/         MutationLabel, Mutant, EvalCase; mutant materialization
 │   │   │   │   │               and the `cargo check` validity gate (D14)
 │   │   │   │   ├── differential.rs  original-vs-mutant diff: what the mutation caused
+│   │   │   │   ├── holdout.rs   scoring published defects: outcomes, recall, rendering
 │   │   │   │   ├── metrics.rs   per-class, per-track recall/precision + noise floor
 │   │   │   │   └── history.rs   append-only run series (benchmarks/history.json)
 │   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
@@ -169,7 +174,8 @@ where Track 2 is losing.
 │           │                   corpus fetch|index|query|hash
 │           ├── pipeline.rs    Runs both tracks, merges, builds the Report
 │           ├── config.rs      RunConfig
-│           └── commands/      analyze, ir, corpus
+│           └── commands/      analyze, ir, corpus, eval, holdout (checkout, score,
+│                               record; the run-once guard)
 ├── docs/
 │   ├── PROJECT_CONTEXT.md     This file
 │   └── superpowers/
@@ -609,6 +615,15 @@ real constraint. Ordinary choices need no justification.
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
 
+- **`absorbed_handlers` is a field because a machine reads it.** The subject
+  collapse folds one defect seen from many handlers into one row, and the row
+  has always named the handlers it swallowed in its `evidence` prose. The
+  holdout scorer compares per handler (D5), so it needs that list too — and
+  parsing it back out of an English sentence would mean that rewording the
+  sentence silently turns every absorbed hit into a miss. The sentence is now
+  rendered *from* the field, so the two cannot disagree. The general rule:
+  anything downstream has to read is a field, never a sentence.
+
 - **The holdout admits only cases resolved against a repository.**
   `benchmarks/holdout/cases.toml` shipped empty until 2026-09-06 under that
   rule, and the rule still governs every entry added to it: an invented
@@ -836,12 +851,15 @@ notes and *is* committed.
   finding" × "Anchor program" × "resolvable public commit" is genuinely small:
   the most-cited Solana disclosures are native programs, which yield zero
   handlers and would measure the parser's scope rather than detector recall.
-  **A conflict to settle before the single scored run:** the collapse above
-  reports one row per `(class, subject)` while the holdout compares per handler
-  (D5) — verified on the WOOFi case, where Dike finds the defect but reports it
-  under a different handler with the real one among 17 absorbed. The scorer
-  must match absorbed handlers too, or the collapse must become
-  presentation-only.
+  **That conflict is settled (2026-09-12).** The collapse above reports one row
+  per `(class, subject)` while the holdout compares per handler (D5) — verified
+  on the WOOFi case, where Dike finds the defect but reports it under a
+  different handler with the real one among 17 absorbed. `Finding` now carries
+  `absorbed_handlers`, and the scorer counts a case as a hit when its handler is
+  either the reported one or one the row absorbed. The alternative, making the
+  collapse presentation-only, was rejected: it would have moved the real-program
+  headline back from 0.64 to 1.73 findings/KLOC for every JSON consumer to fix a
+  problem that only the scorer had.
 
 - **First measurement on real programs (2026-09-06): 119 findings over 28,247
   LOC of production Anchor code — but only 31 distinct sites.** Track 1 was run
@@ -940,9 +958,12 @@ notes and *is* committed.
   and its `0.000` said nothing. It is Track-2-only by design (D16), so Track 1
   scoring it 0/3 is correct, not a gap. The gap is that Track 2 has never been
   scored, so the class the harness now measures is still unmeasured.
-- `benchmarks/holdout/cases.toml` holds six verified cases (2026-09-06), but
-  `dike eval holdout` cannot score them yet, and the per-`(class, subject)`
-  collapse has to be reconciled with per-handler comparison (D5) first.
+- `benchmarks/holdout/cases.toml` holds six verified cases (2026-09-06) and
+  `dike eval holdout --score` can now score them, but the scored run has not
+  been spent: `runs.json` is still `[]`. Four of the six cases are
+  `removed-guard`, which is Track-2-only (D16), and the holdout scorer runs
+  Track 1 only — so a run today measures Track 1 against a set it can reach
+  two cases of. The command warns about exactly this before it scores.
 - The CI LLM job is a build check, not a scored run: GitHub runners have no GPU,
   so the local generation model cannot run there, and Track 2 also needs an
   indexed corpus that needs an embedding model.

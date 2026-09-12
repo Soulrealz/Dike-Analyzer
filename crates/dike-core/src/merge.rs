@@ -12,6 +12,15 @@ pub fn track2_confidence(raw: f32, citation_count: usize) -> f32 {
     }
 }
 
+/// Sorted, deduplicated union. Sorted rather than insertion-ordered because a
+/// `Finding` must be byte-identical across runs (Rule 5).
+fn union_of_handlers(a: &[String], b: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = a.iter().chain(b).cloned().collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// D4: noisy-OR. Two independent tracks agreeing is genuinely stronger evidence
 /// than either alone, which is why this must exceed both inputs.
 pub fn corroborate(a: &Finding, b: &Finding) -> Finding {
@@ -29,6 +38,9 @@ pub fn corroborate(a: &Finding, b: &Finding) -> Finding {
         evidence: format!("{}\n\n---\n\n{}", a.evidence, b.evidence),
         citations,
         subject: a.subject.clone().or_else(|| b.subject.clone()),
+        // Either side may have absorbed handlers before corroboration; the
+        // defect is reachable from the union of them.
+        absorbed_handlers: union_of_handlers(&a.absorbed_handlers, &b.absorbed_handlers),
     }
 }
 
@@ -72,15 +84,17 @@ pub fn collapse_by_subject(findings: Vec<Finding>) -> Vec<Finding> {
         });
         let mut survivor = group.remove(0);
         if !group.is_empty() {
-            let mut others: Vec<String> =
-                group.into_iter().map(|f| f.location.handler).collect();
-            others.sort();
-            others.dedup();
+            let others: Vec<String> = group.into_iter().map(|f| f.location.handler).collect();
+            // The prose is rendered from the structured list, so the two can
+            // never disagree: the scorer reads the field, the auditor reads
+            // the sentence, and both come from the same source.
+            survivor.absorbed_handlers = union_of_handlers(&survivor.absorbed_handlers, &others);
+            survivor.absorbed_handlers.retain(|h| h != &survivor.location.handler);
             survivor.evidence = format!(
                 "{}\n\nThe same defect is reachable from {} other handler(s): {}.",
                 survivor.evidence,
-                others.len(),
-                others.join(", ")
+                survivor.absorbed_handlers.len(),
+                survivor.absorbed_handlers.join(", ")
             );
         }
         out.push(survivor);
@@ -111,6 +125,8 @@ pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<F
                     let mut merged = survivor;
                     merged.id = String::new();
                     merged.evidence = format!("{}\n\n---\n\n{}", merged.evidence, discarded.evidence);
+                    merged.absorbed_handlers =
+                        union_of_handlers(&merged.absorbed_handlers, &discarded.absorbed_handlers);
                     merged
                 } else if existing.track == Track::Corroborated || f.track == Track::Corroborated {
                     // One is already corroborated: take max(confidence), do not re-apply noisy-OR (RULING 6).
@@ -127,6 +143,10 @@ pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<F
                         evidence: format!("{}\n\n---\n\n{}", existing.evidence, f.evidence),
                         citations,
                         subject: existing.subject.clone().or_else(|| f.subject.clone()),
+                        absorbed_handlers: union_of_handlers(
+                            &existing.absorbed_handlers,
+                            &f.absorbed_handlers,
+                        ),
                     }
                 } else {
                     corroborate(&existing, &f)
@@ -174,6 +194,7 @@ mod tests {
             evidence: format!("{subject} is unbound"),
             citations: vec![],
             subject: Some(subject.to_string()),
+            absorbed_handlers: Vec::new(),
         }
     }
 
@@ -209,6 +230,38 @@ mod tests {
             out[0].evidence
         );
         assert!(out[0].evidence.contains("1 other handler"), "{}", out[0].evidence);
+    }
+
+    /// The holdout compares per handler (D5) while this collapses per subject,
+    /// so a case whose handler was absorbed must still be findable. Prose in
+    /// `evidence` cannot carry that: the scorer would be parsing English, and
+    /// rewording the sentence would turn every hit into a silent miss.
+    #[test]
+    fn absorbed_handlers_are_listed_structurally_not_only_in_prose() {
+        let fs = vec![
+            subject_finding("config.admin", "missing-authority-binding", "claim", 40),
+            subject_finding("config.admin", "missing-authority-binding", "place_bet", 12),
+            subject_finding("config.admin", "missing-authority-binding", "refund", 88),
+        ];
+        let out = collapse_by_subject(fs);
+        assert_eq!(out.len(), 1);
+        // `place_bet` is the lowest line, so it survives and does not list itself.
+        assert_eq!(out[0].location.handler, "place_bet");
+        assert_eq!(
+            out[0].absorbed_handlers,
+            vec!["claim".to_string(), "refund".to_string()],
+            "sorted, and the survivor is not among them"
+        );
+    }
+
+    /// A row that absorbed nothing must carry an empty list, or "this defect is
+    /// reachable from these handlers" would be a claim about handlers that were
+    /// never examined.
+    #[test]
+    fn a_row_that_absorbed_nothing_lists_nothing() {
+        let fs = vec![subject_finding("config.admin", "missing-owner-check", "claim", 40)];
+        let out = collapse_by_subject(fs);
+        assert!(out[0].absorbed_handlers.is_empty(), "{:?}", out[0].absorbed_handlers);
     }
 
     /// Different subjects are different defects, and different classes on one
@@ -250,6 +303,7 @@ mod tests {
             evidence: format!("{track:?} evidence"),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 

@@ -173,6 +173,7 @@ mod tests {
             evidence: format!("{track:?} evidence"),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 

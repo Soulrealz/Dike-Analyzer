@@ -359,6 +359,7 @@ pub struct W<'info> {
             evidence: "static evidence".into(),
             citations: vec![],
             subject: None,
+            absorbed_handlers: Vec::new(),
         }
     }
 
