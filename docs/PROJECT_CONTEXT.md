@@ -128,7 +128,7 @@ where Track 2 is losing.
 ├── benchmarks/
 │   ├── history.json           The eval series: one EvalSummary per run. COMMITTED —
 │   │                           the harness exists to compare runs over time
-│   └── holdout/               The real holdout: cases.toml (empty scaffold) + runs.json
+│   └── holdout/               The real holdout: cases.toml (six cases) + runs.json
 ├── corpus/
 │   ├── sources.toml           Corpus manifest: url, kind, licence, retrieval date, class
 │   │                           tags, optional include_paths, and the refresh rule
@@ -609,10 +609,12 @@ real constraint. Ordinary choices need no justification.
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
 
-- **The holdout ships empty on purpose.** `benchmarks/holdout/cases.toml`
-  carries the schema and the rules and no cases. An invented repository, commit
-  or handler would look exactly like a real case and produce a real-looking
-  number, with nothing in the output to distinguish it. `dike eval holdout`
+- **The holdout admits only cases resolved against a repository.**
+  `benchmarks/holdout/cases.toml` shipped empty until 2026-09-06 under that
+  rule, and the rule still governs every entry added to it: an invented
+  repository, commit or handler would look exactly like a real case and produce
+  a real-looking number, with nothing in the output to distinguish it. An empty
+  holdout is preferable to a populated fictional one. `dike eval holdout`
   prints the memorization caveat *first*, before anything that could fail or be
   skimmed, because a caveat in a document is something a downstream summary can
   drop and a line in the output is not.
@@ -938,8 +940,9 @@ notes and *is* committed.
   and its `0.000` said nothing. It is Track-2-only by design (D16), so Track 1
   scoring it 0/3 is correct, not a gap. The gap is that Track 2 has never been
   scored, so the class the harness now measures is still unmeasured.
-- `benchmarks/holdout/cases.toml` is an empty scaffold; the real holdout has
-  never been scored.
+- `benchmarks/holdout/cases.toml` holds six verified cases (2026-09-06), but
+  `dike eval holdout` cannot score them yet, and the per-`(class, subject)`
+  collapse has to be reconciled with per-handler comparison (D5) first.
 - The CI LLM job is a build check, not a scored run: GitHub runners have no GPU,
   so the local generation model cannot run there, and Track 2 also needs an
   indexed corpus that needs an embedding model.

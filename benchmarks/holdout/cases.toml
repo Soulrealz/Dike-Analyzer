@@ -2,15 +2,15 @@
 # commit that contained them.
 #
 # ---------------------------------------------------------------------------
-# THIS FILE IS DELIBERATELY EMPTY.
+# NO CASE GOES IN HERE UNRESOLVED.
 # ---------------------------------------------------------------------------
 #
 # Every entry must come from a disclosure you have actually read, with a commit
 # hash you have actually resolved. An invented repository, hash or handler name
 # would be a fabricated record: it would look exactly like a real case, produce
 # a real-looking number, and there is no way to tell the difference from the
-# output. Populate this from verified sources or leave it empty — a holdout of
-# zero cases is honest, a holdout of plausible fiction is not.
+# output. Add cases from verified sources or add none. A holdout of zero cases
+# is honest, a holdout of plausible fiction is not.
 #
 # Two rules, both from the spec (§8), and both enforced by `dike eval holdout`:
 #
