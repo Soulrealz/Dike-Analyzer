@@ -1,4 +1,4 @@
-//! The single HTTP surface for the whole project (D24). The embedder
+//! The single HTTP surface for the whole project. The embedder
 //! (retrieval) and the LLM client both go through [`HttpClient`], so the
 //! timeout policy and the connection-refused-to-[`HttpError::Unavailable`]
 //! mapping are written exactly once, here.
@@ -57,11 +57,11 @@ impl HttpClient {
     /// timeout that overrides the client's default.
     ///
     /// Both exist for the LLM clients: a generation call needs minutes where
-    /// a corpus fetch needs seconds (spec §9's pathological handler), and one
+    /// a corpus fetch needs seconds (the pathological-handler case), and one
     /// backend authenticates with a header. Adding them here rather than
     /// letting those clients build their own `reqwest` requests is what keeps
     /// the connection-refused-to-[`HttpError::Unavailable`] mapping in one
-    /// place (D24).
+    /// place.
     ///
     /// Header values may be secrets. They are attached to the request and
     /// never logged, never echoed into an error, and never stored.
@@ -117,7 +117,7 @@ mod tests {
         // Assert `Unavailable` exactly, not `Unavailable(_) | Transport(_)`.
         // The looser form would still pass if `map_reqwest_err` regressed
         // to mapping connection refusals to `Transport`, which is exactly
-        // the failure mode the module docstring calls load-bearing: Task 22
+        // the failure mode the module docstring calls load-bearing:
         // branches on `Unavailable` specifically to turn "Ollama isn't
         // running" into a degraded run instead of a hard failure. Connecting
         // to 127.0.0.1:1 (a port nothing listens on) reliably yields

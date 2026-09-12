@@ -16,7 +16,7 @@ pub const MISSING_AUTHORITY_BINDING: &str = "missing-authority-binding";
 pub const PDA_VALIDATION_GAP: &str = "pda-validation-gap";
 pub const UNCHECKED_ARITHMETIC: &str = "unchecked-arithmetic";
 /// Track 2 only — the absence of an arbitrary `constraint = ...` is not a
-/// structural signal (D16).
+/// structural signal.
 pub const REMOVED_GUARD: &str = "removed-guard";
 
 /// Pure. No I/O, no network, no clock. Track 1's numbers must never move
@@ -285,7 +285,7 @@ mod tests {
         }
     }
 
-    /// Closes a coverage hole left after Task 11's review: `owner.rs` and
+    /// Closes a coverage hole found in review: `owner.rs` and
     /// `signer.rs` are the only `finding_from` callers, and neither had any
     /// test pinning a concrete `location.line`. A silent swap of
     /// `decl.line` for `decl.attr_line` inside `finding_from` previously

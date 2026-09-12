@@ -222,7 +222,7 @@ impl Bm25Index {
     /// query and destroy the phrase-adjacency requirement that makes it
     /// exact, per the module doc) cannot be reinterpreted as field
     /// selectors, phrase quotes, must/must-not prefixes, boosts, or
-    /// wildcards. This matters for callers (e.g. Task 20's IR-derived
+    /// wildcards. This matters for callers (e.g. the IR-derived
     /// queries) that may pass through raw source fragments like
     /// `Account<Vault>` or `constraint = ...`, which would otherwise risk a
     /// parse error or a silently misparsed query, and for this project's own
@@ -535,7 +535,7 @@ mod tests {
     }
 
     /// Item 4b: `search` must treat its input as literal terms, not as
-    /// tantivy query syntax, so IR-derived queries (Task 20) carrying
+    /// tantivy query syntax, so IR-derived queries carrying
     /// source-like fragments (`Account<Vault>`, `constraint = ...`) do not
     /// risk a parse error or a silently misparsed query.
     #[test]

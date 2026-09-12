@@ -150,7 +150,7 @@ fn the_holdout_command_leads_with_the_memorization_caveat() {
     // The invariant that outlives both the empty scaffold and the arrival of
     // a scorer: the bare command never lets a number be inferred from an
     // inventory it did not score, and says which flag would score it. Scoring
-    // spends the one run this set permits (spec §8), so it must never be what
+    // spends the one run this set permits, so it must never be what
     // an exploratory `dike eval holdout` does.
     assert!(
         stdout.contains("Nothing was scored") && stdout.contains("--score"),

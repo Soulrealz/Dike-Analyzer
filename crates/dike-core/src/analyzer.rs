@@ -68,7 +68,7 @@ impl SourceTree {
         Ok(SourceTree { root: root.to_path_buf(), files })
     }
 
-    /// Physical lines across all analyzed files. Denominator for the noise floor (D18).
+    /// Physical lines across all analyzed files. Denominator for the noise floor.
     pub fn total_loc(&self) -> usize {
         self.files.iter().map(|f| f.text.lines().count()).sum()
     }
@@ -80,7 +80,7 @@ pub enum DiagnosticKind {
     /// A file could not be parsed; it was skipped. Reported in coverage, never silent.
     ParseFailure,
     Skipped,
-    /// Two symbols share a name across files; first-seen won (D10).
+    /// Two symbols share a name across files; first-seen won.
     Ambiguity,
     /// A whole track did not run (e.g. LLM unavailable). Degraded, not failed.
     TrackSkipped,
@@ -111,7 +111,7 @@ pub struct AnalysisResult {
     pub diagnostics: Vec<Diagnostic>,
     pub files_analyzed: usize,
     /// `None` for a track with no unit concept — a static analyzer reviews
-    /// the whole tree, not a sequence of units. Additive (D28): the field
+    /// the whole tree, not a sequence of units. Additive: the field
     /// has a `Default`, so existing constructions keep compiling.
     pub units: Option<UnitCoverage>,
 }

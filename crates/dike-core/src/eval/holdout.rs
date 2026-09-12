@@ -13,7 +13,7 @@
 //!    positive or may be an unpublished defect, and nothing here can tell the
 //!    two apart, so no precision number is computed. Reporting one would be
 //!    inventing a denominator.
-//! 2. **A case is never scored twice.** Spec §8: the set is touched once, at
+//! 2. **A case is never scored twice.** The set is touched once, at
 //!    the end. Everything here is therefore built to make a *partial* run
 //!    visible rather than to paper over it — a case whose source could not be
 //!    obtained is [`HoldoutOutcome::Unavailable`], which is excluded from the
@@ -34,7 +34,7 @@ pub const HOLDOUT_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HoldoutTarget {
     pub id: String,
-    /// The unit findings are compared at (D5).
+    /// The unit findings are compared at.
     pub handler: String,
     /// Compared against `VulnClass::as_str` exactly. A case labelled with a
     /// class the tool does not speak can only ever miss, which is the honest

@@ -31,7 +31,7 @@ pub struct AnchorAnalysis {
 /// resolves, suppress, and rank. A handler whose `context_ty` does not
 /// resolve to a known `#[derive(Accounts)]` struct gets a `Skipped`
 /// diagnostic and is left out of the findings entirely — partial results
-/// beat no results (spec §9), so one unresolvable handler must not stop
+/// beat no results, so one unresolvable handler must not stop
 /// analysis of the rest.
 pub fn analyze_program(tree: &SourceTree) -> AnchorAnalysis {
     let parsed = parser::parse_tree(tree);
@@ -71,7 +71,7 @@ pub fn analyze_program(tree: &SourceTree) -> AnchorAnalysis {
     AnchorAnalysis {
         result: AnalysisResult {
             // The static track reviews the whole tree, not a sequence of
-            // units, so it reports no unit coverage (D28).
+            // units, so it reports no unit coverage.
             units: None,
             findings,
             diagnostics,
@@ -113,7 +113,7 @@ mod tests {
     /// aborting the whole analysis: a `Skipped` diagnostic is emitted naming
     /// the handler and the unresolved type, and `withdraw` — the other,
     /// fully-resolvable handler — must still be analyzed and produce
-    /// findings. Partial results beat no results (spec §9); this is the
+    /// findings. Partial results beat no results; this is the
     /// test of that principle.
     #[test]
     fn unresolvable_context_type_is_skipped_not_fatal() {

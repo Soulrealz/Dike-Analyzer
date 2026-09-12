@@ -1,14 +1,14 @@
 //! Dense vector store: one sqlite file, vectors as little-endian `f32` BLOBs,
 //! cosine similarity computed in Rust over every row.
 //!
-//! **Deviation (D25).** The design doc names `sqlite-vec`. This uses plain
+//! **Deviation.** The design doc names `sqlite-vec`. This uses plain
 //! `rusqlite` with a linear scan instead. Every requirement the doc actually
 //! states still holds: one file, no server, index reproducible from the fetch
 //! step. At v1 corpus size (hundreds of chunks) a linear scan is
 //! sub-millisecond, and the [`VectorStore`] interface hides the choice, so
 //! adopting the extension later is a one-file change.
 //!
-//! **Dimension safety (D26).** The `meta` table records the `(model, dim)` the
+//! **Dimension safety.** The `meta` table records the `(model, dim)` the
 //! index was built with. A query whose dimension disagrees is a refusal
 //! ([`StoreError::ModelMismatch`]), never a cosine score computed across
 //! mismatched dimensions -- a number that looks fine and means nothing.

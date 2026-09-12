@@ -1,5 +1,5 @@
 //! Source fetching and normalization: HTML-to-text, archive extraction, the
-//! change-detection policy (D21), and the on-disk fetch cache.
+//! change-detection policy, and the on-disk fetch cache.
 
 use std::io::Read;
 use std::path::{Component, Path};
@@ -38,7 +38,7 @@ enum RawScan {
     Neither,
 }
 
-/// Strip HTML tags and decode entities into plain text (D23).
+/// Strip HTML tags and decode entities into plain text.
 ///
 /// `<script>`/`<style>` element *contents* are dropped, not merely their
 /// tags, so page JavaScript never leaks into the corpus. Entities are
@@ -307,7 +307,7 @@ pub fn html_to_text(html: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
             .to_ascii_lowercase();
-        // Headings become Markdown headings rather than bare text (D31).
+        // Headings become Markdown headings rather than bare text.
         //
         // The chunker splits on Markdown headings and finding-ID tokens. A
         // fetched HTML page has neither once its tags are stripped, so a
@@ -404,7 +404,7 @@ fn is_unsafe_archive_path(path: &str) -> bool {
 /// Decompress `gz` as a gzipped tar archive and return `(path, utf8 text)`
 /// pairs for entries whose extension (without the dot) is in `keep_ext`.
 ///
-/// Untrusted-input handling (spec §9, partial results beat no results):
+/// Untrusted-input handling (partial results beat no results):
 /// entries with a path-traversal-shaped path are skipped, entries whose
 /// bytes are not valid UTF-8 are skipped rather than failing the whole
 /// archive, and the result is sorted by path for determinism.
@@ -474,7 +474,7 @@ fn is_included(path: &str, include_paths: &[String]) -> bool {
     })
 }
 
-/// The result of [`fetch_source`], per the change policy (D21).
+/// The result of [`fetch_source`], per the change policy.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchOutcome {
     /// First-ever fetch: the manifest's `sha256` was empty.

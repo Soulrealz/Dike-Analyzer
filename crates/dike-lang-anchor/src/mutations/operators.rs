@@ -1,4 +1,4 @@
-//! The six v1 mutation operators (D13).
+//! The six v1 mutation operators.
 //!
 //! Every operator follows the same shape: find sites in the IR, rewrite the
 //! original source text at each one, and — only if the text actually changed —
@@ -6,7 +6,7 @@
 //!
 //! Operators skip sites where the rewrite would not compile. A mutant Anchor
 //! rejects is not a hard case for the analyzer, it is a mutant the harness
-//! never gets to score, and Task 24's compile gate would drop it anyway; the
+//! never gets to score, and the compile gate would drop it anyway; the
 //! cheaper place to know that is here, where the reason is visible.
 
 use super::{
@@ -586,7 +586,7 @@ pub struct G<'info> {
     }
 
     /// Anchor rejects an unvalidated field with no `/// CHECK:` doc, so a
-    /// mutant without one never survives Task 24's compile gate.
+    /// mutant without one never survives the compile gate.
     #[test]
     fn wrapper_operators_document_the_unvalidated_field() {
         for text in [

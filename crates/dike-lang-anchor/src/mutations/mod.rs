@@ -1,4 +1,4 @@
-//! Vulnerability injection: the six v1 mutation operators (D13).
+//! Vulnerability injection: the six v1 mutation operators.
 //!
 //! Each operator takes a *clean* program and produces one mutant per applicable
 //! site, each carrying a `MutationLabel` naming the defect it just introduced.

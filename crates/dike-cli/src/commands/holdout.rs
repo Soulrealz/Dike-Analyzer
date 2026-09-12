@@ -3,7 +3,7 @@
 //! Split from `eval.rs` because it is a different kind of harness. The
 //! differential harness owns its inputs: it makes the mutants, so it can rerun
 //! whenever it likes. This one reads code somebody else wrote at a commit
-//! somebody else published, and spec §8 permits exactly one scored pass over
+//! somebody else published, and the design permits exactly one scored pass over
 //! the set. Almost everything below exists to keep that pass from being spent
 //! by accident.
 //!
@@ -44,7 +44,7 @@ const CHECKOUT_MARKER: &str = ".dike-checkout";
 ///
 /// Printed by the command rather than written in a document, because a footnote
 /// in a document is something a summary downstream can drop and a line in the
-/// output is not (spec §8).
+/// output is not.
 pub const MEMORIZATION_CAVEAT: &str = "\
 CAVEAT — read this before quoting any number below.
 These are published findings in well-known programs. They are plausibly in the
@@ -158,14 +158,14 @@ pub fn holdout(opts: HoldoutOptions) -> anyhow::Result<()> {
     if !opts.score {
         println!(
             "Listing only. Nothing was scored and no run was recorded. Pass --score to \
-             spend the one scored run this set permits (spec §8); add --offline to score \
+             spend the one scored run this set permits; add --offline to score \
              only the programs already checked out under {}.",
             opts.checkout_dir.display()
         );
         return Ok(());
     }
 
-    // Spec §8: the holdout is touched once. A second run means the numbers were
+    // The holdout is touched once. A second run means the numbers were
     // read, something was changed, and the numbers were read again — which is
     // tuning on the test set, whatever the intent was.
     let prior = read_runs(&opts.runs_path)?;
@@ -219,7 +219,7 @@ pub fn holdout(opts: HoldoutOptions) -> anyhow::Result<()> {
 /// the track being run can report.
 ///
 /// Measured 2026-09-12 against the six populated cases: four are
-/// `removed-guard`, which is Track-2-only by design (D16) because the absence
+/// `removed-guard`, which is Track-2-only by design because the absence
 /// of an arbitrary expression is not a structural signal. A Track 1 pass over
 /// this set therefore misses those four before it reads a line of code, and
 /// the resulting recall would describe the class vocabulary rather than the
@@ -585,7 +585,7 @@ mod tests {
 
     /// The one run must not be spent discovering that most of the set was
     /// unreachable by construction. Four of the six populated cases are
-    /// `removed-guard`, which is Track-2-only by design (D16).
+    /// `removed-guard`, which is Track-2-only by design.
     #[test]
     fn a_class_no_detector_reports_is_called_out_before_the_run_is_spent() {
         let mut reachable = case("a", "programs/x/src/lib.rs");

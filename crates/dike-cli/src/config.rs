@@ -13,7 +13,7 @@ pub struct RunConfig {
     /// without it is still a complete Track 1 run.
     pub llm: bool,
     pub ollama_host: String,
-    /// Generation model. A parameter, never a constant (D26).
+    /// Generation model. A parameter, never a constant.
     pub model: String,
     pub embed_model: String,
     pub index_dir: std::path::PathBuf,

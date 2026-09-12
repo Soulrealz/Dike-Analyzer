@@ -13,7 +13,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// Ranking weights (D2). Pinned — the eval harness compares runs across time.
+    /// Ranking weights. Pinned — the eval harness compares runs across time.
     pub fn weight(self) -> f32 {
         match self {
             Severity::Critical => 1.0,
@@ -26,7 +26,7 @@ impl Severity {
 }
 
 /// A vulnerability class label. Deliberately a string newtype, not an enum:
-/// class vocabularies are language-specific and live in the language crates (D6).
+/// class vocabularies are language-specific and live in the language crates.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct VulnClass(String);
 
@@ -51,7 +51,7 @@ pub enum Track {
 pub struct Location {
     pub file: PathBuf,
     pub line: u32,
-    /// Enclosing instruction handler. The unit at which findings are compared (D5).
+    /// Enclosing instruction handler. The unit at which findings are compared.
     pub handler: String,
 }
 
@@ -74,7 +74,7 @@ pub struct Finding {
     pub class: VulnClass,
     pub severity: Severity,
     /// How sure this *instance* is real. Track 1: a per-detector constant.
-    /// Track 2: model-reported, clamped and down-weighted (D3).
+    /// Track 2: model-reported, clamped and down-weighted.
     pub confidence: f32,
     pub track: Track,
     pub location: Location,
@@ -97,7 +97,7 @@ pub struct Finding {
     /// [`crate::merge::collapse_by_subject`] folded them into it. The same
     /// defect is reachable from every one of them.
     ///
-    /// Structured because the holdout scorer compares per handler (D5) while
+    /// Structured because the holdout scorer compares per handler while
     /// the report shows one row per subject: without this the scorer would
     /// have to read the absorbed handlers back out of the evidence prose, and
     /// rewording a sentence would silently turn every hit into a miss. Sorted
@@ -107,7 +107,7 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// Dedupe/corroboration key: handler granularity + class, never the span (D5).
+    /// Dedupe/corroboration key: handler granularity + class, never the span.
     pub fn merge_key(&self) -> (String, VulnClass) {
         (self.location.handler_id(), self.class.clone())
     }

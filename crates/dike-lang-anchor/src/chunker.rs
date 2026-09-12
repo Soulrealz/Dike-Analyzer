@@ -1,11 +1,11 @@
 //! Handler chunking and derived retrieval queries.
 //!
-//! A [`HandlerUnit`] is the smallest self-contained review unit (spec §6):
+//! A [`HandlerUnit`] is the smallest self-contained review unit:
 //! one handler's body, its accounts struct, and every state struct that
 //! struct actually references. Anything more pads the model's context window
 //! with code that cannot be part of the answer.
 //!
-//! **The query is derived, never raw source (spec §7).** Raw Rust embeds
+//! **The query is derived, never raw source.** Raw Rust embeds
 //! poorly; a description of behaviour embeds well. The clause that carries
 //! the most retrieval signal is the *absent* one — audit findings are
 //! written about what was missing, not about what was there.

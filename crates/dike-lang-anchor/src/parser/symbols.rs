@@ -3,7 +3,7 @@ use dike_core::analyzer::{Diagnostic, DiagnosticKind};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// One flat namespace keyed by bare type name (D10). Anchor context types are
+/// One flat namespace keyed by bare type name. Anchor context types are
 /// referenced as `Context<Withdraw>` regardless of the module they live in, so
 /// path-accurate resolution buys nothing here and costs a lot.
 #[derive(Default)]

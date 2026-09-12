@@ -2,7 +2,7 @@ use crate::finding::{Finding, Track, VulnClass};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// D3: model-reported confidence, clamped, down-weighted on a lone citation.
+/// Model-reported confidence, clamped, down-weighted on a lone citation.
 pub fn track2_confidence(raw: f32, citation_count: usize) -> f32 {
     let clamped = raw.clamp(0.10, 0.90);
     if citation_count == 1 {
@@ -21,7 +21,7 @@ fn union_of_handlers(a: &[String], b: &[String]) -> Vec<String> {
     out
 }
 
-/// D4: noisy-OR. Two independent tracks agreeing is genuinely stronger evidence
+/// Noisy-OR. Two independent tracks agreeing is genuinely stronger evidence
 /// than either alone, which is why this must exceed both inputs.
 pub fn corroborate(a: &Finding, b: &Finding) -> Finding {
     let confidence = (1.0 - (1.0 - a.confidence) * (1.0 - b.confidence)).min(0.98);
@@ -102,7 +102,7 @@ pub fn collapse_by_subject(findings: Vec<Finding>) -> Vec<Finding> {
     out
 }
 
-/// Dedupe on (handler_id, class) — D5 — then rank. Corroborated findings surface
+/// Dedupe on (handler_id, class), never on the span, then rank. Corroborated findings surface
 /// first because their confidence exceeds either contributing track's.
 pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<Finding> {
     let mut by_key: BTreeMap<(String, VulnClass), Finding> = BTreeMap::new();
@@ -114,7 +114,7 @@ pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<F
             }
             Some(existing) => {
                 let combined = if existing.track == f.track {
-                    // Same track reported it twice: keep the stronger, concatenate evidence (RULING 5).
+                    // Same track reported it twice: keep the stronger, concatenate evidence.
                     // Do not inflate confidence — use the stronger value only.
                     // Tie-break on evidence string for order-independence (byte-identical across runs).
                     let (survivor, discarded) = match f.rank_score().partial_cmp(&existing.rank_score()) {
@@ -129,7 +129,7 @@ pub fn merge(static_findings: Vec<Finding>, llm_findings: Vec<Finding>) -> Vec<F
                         union_of_handlers(&merged.absorbed_handlers, &discarded.absorbed_handlers);
                     merged
                 } else if existing.track == Track::Corroborated || f.track == Track::Corroborated {
-                    // One is already corroborated: take max(confidence), do not re-apply noisy-OR (RULING 6).
+                    // One is already corroborated: take max(confidence), do not re-apply noisy-OR.
                     let confidence = existing.confidence.max(f.confidence);
                     let mut citations = existing.citations.clone();
                     citations.extend(f.citations.iter().cloned());
@@ -232,7 +232,7 @@ mod tests {
         assert!(out[0].evidence.contains("1 other handler"), "{}", out[0].evidence);
     }
 
-    /// The holdout compares per handler (D5) while this collapses per subject,
+    /// The holdout compares per handler while this collapses per subject,
     /// so a case whose handler was absorbed must still be findable. Prose in
     /// `evidence` cannot carry that: the scorer would be parsing English, and
     /// rewording the sentence would turn every hit into a silent miss.

@@ -4,7 +4,7 @@
 //! attribute list — a dangling comma, an unbalanced bracket, an item removed
 //! without its separator. A mutant that does not parse never reaches the
 //! analyzer, so the eval harness would score it as a silent miss rather than
-//! as the tooling bug it is. This is a cheap stand-in for Task 24's compile
+//! as the tooling bug it is. This is a cheap stand-in for the harness's compile
 //! gate: it cannot prove Anchor accepts the program, but it catches every
 //! defect the text surgery here is capable of producing.
 

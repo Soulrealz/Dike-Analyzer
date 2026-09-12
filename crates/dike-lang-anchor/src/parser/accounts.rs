@@ -57,7 +57,7 @@ pub fn parse_accounts_struct(item: &syn::ItemStruct, file: &Path) -> AccountsStr
     }
 }
 
-/// Recursively unwraps `Box<..>` and `Option<..>` before classifying (D8).
+/// Recursively unwraps `Box<..>` and `Option<..>` before classifying.
 pub(crate) fn parse_wrapper(ty: &syn::Type) -> (Wrapper, bool, bool) {
     fn outer_segment(ty: &syn::Type) -> Option<&syn::PathSegment> {
         match ty {

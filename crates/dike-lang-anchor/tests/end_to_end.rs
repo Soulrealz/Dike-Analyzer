@@ -122,7 +122,7 @@ fn injecting_a_missing_signer_produces_that_finding_on_the_mutated_account() {
 /// over the *clean* vault fixture, which produces zero findings — it
 /// asserted `[] == []`, proving nothing about `rank`'s stability, and
 /// nothing at all about tie-break ordering, which is exactly the fragile
-/// part (Task 3 needed two fix rounds to make ranking order-independent
+/// part (ranking took two fix rounds to become order-independent
 /// when `rank_score` ties).
 ///
 /// This mutates the fixture (same in-memory technique as

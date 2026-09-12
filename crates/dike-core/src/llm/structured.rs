@@ -3,13 +3,13 @@
 //!
 //! Three mechanisms, all from the spec:
 //!
-//! 1. **One retry, with the violation fed back** (§9). Never a third attempt,
+//! 1. **One retry, with the violation fed back**. Never a third attempt,
 //!    never a crash — a unit that fails twice is dropped and logged.
 //! 2. **Tolerant parsing.** A 14B model wraps JSON in commentary and code
 //!    fences constantly. Failing on that throws away good findings, so the
 //!    parser strips fences and, if prose surrounds the array, extracts from
 //!    the first `[` to the last `]`.
-//! 3. **Citation validation (D12).** A citation naming a document that was
+//! 3. **Citation validation.** A citation naming a document that was
 //!    never offered is deleted; a finding left with none is dropped. This is
 //!    what turns grounding from a claim into a filter — without it, "cite
 //!    your sources" is a request the model can decline silently.
@@ -266,9 +266,9 @@ pub fn complete_structured(
 
 /// Turn a reported finding into a real one, or drop it.
 ///
-/// Citations naming documents that were never offered are deleted (D12), and
+/// Citations naming documents that were never offered are deleted, and
 /// a finding with no surviving citation returns `None`. `file` is a parameter
-/// because a `RawLlmFinding` carries no path and a `Location` needs one (D27).
+/// because a `RawLlmFinding` carries no path and a `Location` needs one.
 pub fn validate_citations(
     f: RawLlmFinding,
     offered: &[RetrievalHit],
@@ -277,7 +277,7 @@ pub fn validate_citations(
     // Resolve each citation to an offered document, then dedupe on the
     // DOCUMENT, not on the string the model wrote.
     //
-    // Resolution is tolerant, D12 is not. The rule that matters is "the
+    // Resolution is tolerant, the grounding rule is not. The rule that matters is "the
     // citation must name a document that was actually offered"; it says
     // nothing about which of that document's identifiers the model must use.
     // The prompt shows an id and a title, the document text is full of URLs,
@@ -311,7 +311,7 @@ pub fn validate_citations(
         .collect();
 
     if citations.is_empty() {
-        // The grounding filter (D12) is silent by design in the report — an
+        // The grounding filter is silent by design in the report — an
         // ungrounded finding is not a finding. But "the model found nothing"
         // and "everything it found cited a document that was never offered"
         // are opposite diagnoses that look identical from outside, and the
@@ -459,7 +459,7 @@ mod tests {
         }
     }
 
-    /// The prompt shape Task 22 will use, kept free of domain vocabulary so
+    /// The prompt shape Track 2 uses, kept free of domain vocabulary so
     /// the seam gate stays happy (this crate must name no chain or framework).
     const LIVE_SYSTEM: &str = "You review code for security defects. Reply with ONLY a JSON \
          array. Each element must have exactly these fields: class (string), severity \
@@ -674,7 +674,7 @@ That is all."#;
 
     /// Measured 2026-09-06 on `leaky_vault`: the one finding Track 2 produced
     /// cited `https://docs.solana.com/...` instead of the `doc_id` it was
-    /// shown, and D12 dropped it. The grounding rule is "the citation must
+    /// shown, and the grounding filter dropped it. The grounding rule is "the citation must
     /// name a document that was actually offered" — naming it by its URL is
     /// still naming it, and discarding a correctly grounded finding over the
     /// spelling of the identifier is a false negative (Rule 3).
@@ -715,7 +715,8 @@ That is all."#;
         );
     }
 
-    /// The guarantee D12 actually makes, unchanged by the tolerance: a
+    /// The guarantee the grounding filter actually makes, unchanged by the
+    /// tolerance: a
     /// citation naming something that was never offered is deleted, whatever
     /// it looks like. A plausible URL is exactly what a hallucination looks
     /// like, so this is the case that must stay strict.
@@ -750,7 +751,7 @@ That is all."#;
     fn a_kept_finding_carries_a_complete_location() {
         let offered = vec![hit_with_id("d1")];
         let f = validate_citations(raw_finding(vec!["d1".into()]), &offered, &file()).unwrap();
-        assert_eq!(f.location.file, file(), "D27: the file comes from the caller");
+        assert_eq!(f.location.file, file(), "the file comes from the caller");
         assert_eq!(f.location.handler, "withdraw");
         assert_eq!(f.location.line, 12);
         assert_eq!(f.track, Track::Llm);

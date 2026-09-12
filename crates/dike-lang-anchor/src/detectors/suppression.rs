@@ -87,7 +87,7 @@ fn anchored_occurrences(haystack: &str, needle: &str) -> Vec<usize> {
         if anchored {
             out.push(abs);
         }
-        // Task 12 fix round 3, Item 3: advance past THIS occurrence's start
+        // Advance past THIS occurrence's start
         // (accepted or rejected — either way there may be a later, distinct
         // match) by the byte length of the needle's first character, not a
         // fixed one byte. `abs` itself is always a valid char boundary of
@@ -148,7 +148,7 @@ fn consume_chain_backward(s: &str, upto: usize) -> usize {
     start
 }
 
-/// Task 12 fix round 3, Item 1: the local equality-to-key adjacency scan.
+/// The local equality-to-key adjacency scan.
 /// Recovers the single most common plain-`require!` identity-validation
 /// idiom in Anchor code —
 /// `require!(ctx.accounts.vault.admin == ctx.accounts.admin.key(), E::X)` —
@@ -205,7 +205,7 @@ fn equality_to_key_suppresses(compact: &str, name: &str) -> bool {
 
         // Mirror: other...key() == X.field
         //
-        // Task 12 fix round 4, Item 1: this used to recover `before_eq` and
+        // This used to recover `before_eq` and
         // `call_end` by subtracting a fixed byte count (2, for "==" or
         // "()") from a boundary and then slicing at the result. `checked_sub`
         // guards integer underflow only — it says nothing about whether the
@@ -291,7 +291,7 @@ pub fn apply(
         }
 
         let subject = subject_account(&f, accounts);
-        // Fix round 1 (Task 12 critical defect): naming an account in a
+        // A critical defect found in review: naming an account in a
         // check's `referenced_accounts` means only that an `Ident` token
         // spelling that name appeared SOMEWHERE in the check's macro
         // arguments — `identifiers()` walks every token, including field
@@ -306,7 +306,7 @@ pub fn apply(
         // substring tests below, rather than asking "does `.key()` appear
         // anywhere in the check's text at all".
         //
-        // Fix round 2 (Task 12, two residual over-suppression defects):
+        // Two residual over-suppression defects:
         //
         // Defect A — the `.key()` test was not anchored to the subject. Round
         // 1 asked only whether `.key()` appeared ANYWHERE in the check's
@@ -386,7 +386,7 @@ pub fn apply(
         // stripping all whitespace yields the compact form these substring
         // tests assume (round 1 established this).
         //
-        // Fix round 3 (Task 12, Item 1): a third, `CheckKind`-independent
+        // A third, `CheckKind`-independent
         // disjunct for `missing-owner-check` / `missing-authority-binding` —
         // see `equality_to_key_suppresses` above for the full rationale and
         // the rejected clause-splitting alternative. In short: a plain
@@ -512,7 +512,7 @@ mod tests {
         apply(findings, handler, &accounts)
     }
 
-    /// RENAMED and REWRITTEN for Task 12 fix round 2, Defect B. The old name
+    /// RENAMED and REWRITTEN when Defect B below was found. The old name
     /// (`require_keys_eq_suppresses_missing_signer_on_the_named_account`)
     /// described the exact behavior Defect B identifies as wrong: a
     /// `require_keys_eq!` proves key EQUALITY, not a SIGNATURE — an attacker
@@ -547,7 +547,7 @@ mod tests {
         );
     }
 
-    /// Strengthened per Task 12 mandatory correction 3: the plan's original
+    /// Strengthened in review: the original
     /// fixture declared BOTH `authority: AccountInfo<'info>` and
     /// `raw: UncheckedAccount<'info>` and only asserted `.any(...)` on
     /// `missing-owner-check`, which can pass via `authority` alone even if
@@ -600,7 +600,7 @@ mod tests {
         assert!(kept.iter().any(|f| f.class.as_str() == "unchecked-arithmetic"));
     }
 
-    /// Task 12 fix round 1, critical defect: a bounds/balance check that
+    /// The critical defect: a bounds/balance check that
     /// merely reads a field off the account (`vault.amount`) must NOT
     /// suppress a genuine finding on that account. Before the fix,
     /// `referenced_accounts` contained `vault` purely because the expression
@@ -645,8 +645,8 @@ mod tests {
         );
     }
 
-    /// RENAMED and REWRITTEN AGAIN for Task 12 fix round 3, Item 2. Fix round
-    /// 2 renamed this test (from `a_require_containing_dot_key_still_suppresses`)
+    /// RENAMED and REWRITTEN AGAIN. An earlier round had renamed this test
+    /// (from `a_require_containing_dot_key_still_suppresses`)
     /// to `a_require_with_dot_key_on_a_different_account_does_not_suppress`
     /// and asserted that `require!(ctx.accounts.vault.admin ==
     /// ctx.accounts.admin.key(), ...)` must NOT suppress
@@ -654,10 +654,10 @@ mod tests {
     /// `require!`/`==` gives no structural `Pubkey`-typing guarantee the way
     /// `require_keys_eq!` does.
     ///
-    /// Round 3 corrects that reasoning: this expression genuinely validates
+    /// That reasoning was wrong: this expression genuinely validates
     /// `vault.admin` against `admin`'s key — it's spelled `==` instead of
     /// `require_keys_eq!`, but it is the exact same identity comparison, and
-    /// it is (per the round-3 brief) arguably the single most common
+    /// it is arguably the single most common
     /// imperative identity-validation idiom in Anchor code. The local
     /// equality-to-key adjacency scan added this round
     /// (`equality_to_key_suppresses`) recognizes it directly: it requires
@@ -772,7 +772,7 @@ mod tests {
         );
     }
 
-    /// Task 12 fix round 2, Defect A: the `.key()` test was not anchored to
+    /// Defect A: the `.key()` test was not anchored to
     /// the subject. `owner.key()` proves `owner`'s identity and says nothing
     /// about `vault`, but `vault` was in `referenced_accounts` (its name
     /// token appears in the macro args) and the old rule asked only "does
@@ -834,7 +834,7 @@ mod tests {
         );
     }
 
-    /// Task 12 fix round 2, Defect B: key equality is not proof of a
+    /// Defect B: key equality is not proof of a
     /// signature. `require_keys_eq!(ctx.accounts.vault.admin,
     /// ctx.accounts.admin.key())` proves the caller-supplied `admin`
     /// account's pubkey equals the value stored in `vault.admin` — that is
@@ -1121,7 +1121,7 @@ mod tests {
                 && s.finding.evidence.contains("`vault`")));
     }
 
-    /// Task 12 fix round 3, Item 3: `contains_anchored` (via its
+    /// `contains_anchored` (via its
     /// `anchored_occurrences` helper) must advance past a REJECTED match by
     /// the rejected needle's first character's UTF-8 length, not a fixed one
     /// byte. This is unreachable through a multi-byte character elsewhere in
@@ -1171,7 +1171,7 @@ mod tests {
             && s.finding.evidence.contains("`\u{e9}toileadmin`")), "suppressed={:#?}", suppressed);
     }
 
-    /// Task 12 fix round 4, Item 1: the mirror branch of
+    /// The mirror branch of
     /// `equality_to_key_suppresses` used to recover `before_eq` and
     /// `call_end` with `full_chain_start.checked_sub(2)` /
     /// `before_eq.checked_sub(2)`. `checked_sub` only guards against integer
@@ -1218,7 +1218,7 @@ mod tests {
     }
 
     /// Discriminates `subject_account`'s textual-position scan from a
-    /// declaration-order scan (Task 12 mandatory correction 1). `admin` is
+    /// declaration-order scan. `admin` is
     /// declared BEFORE `vault` in the accounts struct, and the finding is a
     /// `missing-authority-binding` on `vault` whose evidence backticks BOTH
     /// `vault` (the account, first in the text) and `admin` (the unbound

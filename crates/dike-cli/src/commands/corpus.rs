@@ -28,7 +28,7 @@ pub const INDEX_DIR: &str = "corpus/index";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default Ollama host. A default, never a constant baked into the library:
-/// `OllamaEmbedder` takes host and model as parameters (D26), and this is
+/// `OllamaEmbedder` takes host and model as parameters, and this is
 /// the one place a default lives.
 pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 /// Default embedding model: BGE-small-en v1.5, the model the user chose.

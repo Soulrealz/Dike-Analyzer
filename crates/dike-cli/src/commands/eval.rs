@@ -106,7 +106,7 @@ fn report(out: &Path, kept: &[EvalCase], rejected: &[RejectedMutant], skipped: b
     if skipped {
         println!(
             "validity gate SKIPPED (--no-compile-check): {} cases are unverified, and \
-             a finding on a case that no longer compiles inflates recall (D14)",
+             a finding on a case that no longer compiles inflates recall",
             kept.len()
         );
     } else if rejected.is_empty() {

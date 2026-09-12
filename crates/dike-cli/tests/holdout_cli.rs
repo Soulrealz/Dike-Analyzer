@@ -1,6 +1,6 @@
 //! `dike eval holdout --score` end to end, offline.
 //!
-//! The real set is scored once, ever (spec §8), so the scoring path cannot be
+//! The real set is scored once, ever, so the scoring path cannot be
 //! exercised by running it. These tests build a checkout by hand from a fixture
 //! program and point the command at it with `--offline`, which reaches every
 //! step except the fetch: derive the program root, analyze, score each case,

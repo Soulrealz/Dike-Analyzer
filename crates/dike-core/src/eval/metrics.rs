@@ -1,6 +1,6 @@
 //! Per-class, per-track recall and precision, plus the noise floor.
 //!
-//! **Recall is the primary metric** (spec §1, §8): a false positive costs an
+//! **Recall is the primary metric**: a false positive costs an
 //! auditor a minute, a false negative costs them the bug. It leads every table
 //! and sits in the first numeric column.
 //!
@@ -79,7 +79,7 @@ pub struct ClassMetrics {
 }
 
 /// Findings the analyzer reports on the clean program, which the mutation
-/// neither caused nor removed (D18).
+/// neither caused nor removed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoiseFloor {
     pub track: MetricTrack,
@@ -105,7 +105,7 @@ pub struct EvalSummary {
     pub corpus_hash: Option<String>,
     pub per_class: Vec<ClassMetrics>,
     pub noise: Vec<NoiseFloor>,
-    /// Mutants the validity gate refused (D14). Carried so a shrinking case
+    /// Mutants the validity gate refused. Carried so a shrinking case
     /// count is visible in the series rather than looking like improving recall.
     pub cases_rejected: usize,
 }
@@ -113,7 +113,7 @@ pub struct EvalSummary {
 /// Rolls a set of case outcomes up into the numbers the harness reports.
 ///
 /// `loc` is the whole analyzed program's line count — the noise floor's
-/// denominator (D18).
+/// denominator.
 ///
 /// The run's identity (`run_id`, `timestamp`, `model`, `corpus_hash`,
 /// `cases_rejected`) is left for the caller to fill: core stays free of the
@@ -232,7 +232,7 @@ pub fn render_table(summary: &EvalSummary) -> String {
     out.push_str("\n### Noise floor\n\n");
     out.push_str(
         "Findings the analyzer reports on the clean program. The mutation caused none of \
-         them, so they are counted against neither recall nor precision (D18).\n\n",
+         them, so they are counted against neither recall nor precision.\n\n",
     );
     out.push_str("| Track | Findings | LOC | Per 1000 LOC |\n|---|---:|---:|---:|\n");
     for n in &summary.noise {
@@ -248,7 +248,7 @@ pub fn render_table(summary: &EvalSummary) -> String {
     if summary.cases_rejected > 0 {
         out.push_str(&format!(
             "\n{} mutant{} refused by the validity gate and {} not in these numbers \
-             (D14).\n",
+            .\n",
             summary.cases_rejected,
             if summary.cases_rejected == 1 { " was" } else { "s were" },
             if summary.cases_rejected == 1 { "is" } else { "are" },

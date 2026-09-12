@@ -27,7 +27,7 @@ pub use structured::{
 
 use crate::http::HttpError;
 
-/// The default per-request timeout (spec §9). A pathological handler must
+/// The default per-request timeout. A pathological handler must
 /// not hang a run, and the ceiling belongs on the request rather than on the
 /// shared client, whose other callers need seconds, not minutes.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);

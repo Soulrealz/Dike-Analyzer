@@ -1,6 +1,6 @@
 //! The retrieval seam Track 2 consumes, and its hybrid implementation.
 //!
-//! Track 2 holds a `Box<dyn Retrieve>`, never a concrete retriever (D19), so
+//! Track 2 holds a `Box<dyn Retrieve>`, never a concrete retriever, so
 //! it can be exercised against a stub with nothing running.
 //!
 //! [`HybridRetriever`] runs a sparse leg (BM25) and a dense leg (embeddings)

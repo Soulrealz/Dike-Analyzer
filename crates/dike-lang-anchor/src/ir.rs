@@ -159,7 +159,7 @@ pub struct StateStruct {
 }
 
 impl AccountDecl {
-    /// D7: either the typed wrapper or the legacy attribute satisfies a signer check.
+    /// Either the typed wrapper or the legacy attribute satisfies a signer check.
     pub fn enforces_signer(&self) -> bool {
         matches!(self.wrapper, Wrapper::Signer)
             || self.constraints.iter().any(|c| matches!(c, Constraint::SignerAttr))
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn signer_wrapper_and_signer_attribute_are_distinct_but_both_recognized() {
-        // D7: `Signer<'info>` and `#[account(signer)]` are different IR shapes.
+        // `Signer<'info>` and `#[account(signer)]` are different IR shapes.
         let typed = decl("authority", Wrapper::Signer, vec![]);
         let legacy = decl("authority", Wrapper::AccountInfo, vec![Constraint::SignerAttr]);
         assert!(typed.enforces_signer());

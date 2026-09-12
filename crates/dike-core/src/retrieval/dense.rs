@@ -3,11 +3,11 @@
 //! The trait exists so the rest of retrieval never names a provider, and so
 //! tests can substitute a deterministic embedder without a model running.
 //!
-//! **Model names are configuration, never constants (D26).** `OllamaEmbedder`
+//! **Model names are configuration, never constants.** `OllamaEmbedder`
 //! takes its host and model as parameters; the defaults live in the CLI. This
 //! is the single swap point for another embedding model.
 //!
-//! Errors are [`HttpError`] unchanged from [`HttpClient`] (D24) -- a second
+//! Errors are [`HttpError`] unchanged from [`HttpClient`] -- a second
 //! error type here would mean two places deciding what "the server isn't
 //! running" looks like.
 
@@ -191,7 +191,7 @@ mod tests {
             .unwrap();
         assert_eq!(v.len(), 2);
         // Consistency, not 384: hard-coding a dimension bakes one model
-        // choice into a test that has no business knowing it (D26).
+        // choice into a test that has no business knowing it.
         assert_eq!(v[0].len(), v[1].len(), "all rows share one dimension");
         assert!(v[0].len() >= 128, "a real embedding, not an error body");
     }

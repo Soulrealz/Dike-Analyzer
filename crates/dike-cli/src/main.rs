@@ -70,7 +70,7 @@ enum EvalCommand {
         #[arg(long, default_value = "target/eval")]
         work_dir: std::path::PathBuf,
         /// Skip `cargo check` on each mutant. Findings on a mutant that no
-        /// longer compiles inflate recall (D14) — for iteration, never for
+        /// longer compiles inflate recall — for iteration, never for
         /// numbers you intend to quote.
         #[arg(long)]
         no_compile_check: bool,
@@ -90,7 +90,7 @@ enum EvalCommand {
     },
     /// List the real holdout with the memorization caveat, or score it once.
     Holdout {
-        /// Spend the one scored run this set permits (spec §8): check out each
+        /// Spend the one scored run this set permits: check out each
         /// case's program at its recorded commit, analyze it, and record the
         /// result. Without it the command only lists the cases.
         #[arg(long)]
@@ -126,7 +126,7 @@ enum EvalCommand {
         out: std::path::PathBuf,
         /// Skip `cargo check` on each mutant. A mutant that no longer compiles
         /// is not a vulnerable program but a broken one, and a finding on it
-        /// counts as a true positive and inflates recall (D14) — so this is for
+        /// counts as a true positive and inflates recall — so this is for
         /// iterating on operators, never for producing numbers.
         #[arg(long)]
         no_compile_check: bool,

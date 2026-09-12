@@ -28,7 +28,7 @@ pub struct Coverage {
     /// that rather than claiming they were all analyzed.
     pub handlers: usize,
     pub loc: usize,
-    /// Findings withheld by the imperative-check suppression pass (D15).
+    /// Findings withheld by the imperative-check suppression pass.
     pub suppressed: usize,
     /// Review units Track 2 found, and how many it actually sent to a model.
     /// Both zero when Track 2 did not run at all — which the diagnostics

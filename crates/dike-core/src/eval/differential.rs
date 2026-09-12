@@ -1,7 +1,7 @@
 //! Differential evaluation: what did the mutation cause?
 //!
-//! The mechanism that makes every other number in the harness trustworthy
-//! (spec §8). It sidesteps the question "is the base program actually clean?",
+//! The mechanism that makes every other number in the harness trustworthy.
+//! It sidesteps the question "is the base program actually clean?",
 //! which is unanswerable and would otherwise poison every precision figure: a
 //! finding that the analyzer reported on the *original* too was not caused by
 //! the injected defect, whatever it says, and neither a hit nor a miss can be
@@ -9,8 +9,8 @@
 //!
 //! - **True positive** — present in the mutant run, absent in the original run,
 //!   matching the label's handler and class.
-//! - **Noise floor** — present in both runs. Reported separately, per 1000 LOC
-//!   (D18), and never counted as a false positive against the mutation.
+//! - **Noise floor** — present in both runs. Reported separately, per 1000
+//!   LOC, and never counted as a false positive against the mutation.
 //! - **False positive** — introduced by the mutation but matching neither the
 //!   label's class nor its handler.
 
@@ -78,7 +78,7 @@ impl CaseOutcome {
 /// either copy.
 ///
 /// Dropping the file is safe because a handler name identifies an instruction
-/// uniquely within a program — the analyzer's own unit of comparison (D5) — and
+/// uniquely within a program — the analyzer's own unit of comparison — and
 /// two handlers of the same name in one program are not a thing the target
 /// language permits.
 fn diff_key(finding: &Finding) -> (&str, &str) {

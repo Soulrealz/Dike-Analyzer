@@ -32,7 +32,7 @@ eval-static:
     cargo run -p dike-cli -- eval run {{fixture}} --track static
 
 # Same, skipping the validity gate. Findings on a mutant that no longer compiles
-# inflate recall (D14), so this is for iterating on operators — never for
+# inflate recall, so this is for iterating on operators — never for
 # numbers you intend to quote.
 eval-fast:
     cargo run -p dike-cli -- eval run {{fixture}} --track static --no-compile-check
@@ -52,7 +52,7 @@ holdout:
 holdout-dry:
     cargo run -p dike-cli -- eval holdout --score --offline
 
-# THE scored run. Touched once, at the end (spec §8) — it clones each case's
+# THE scored run. Touched once, at the end — it clones each case's
 # repository and `runs.json` refuses a second pass. Not part of any gate.
 holdout-score:
     cargo run -p dike-cli -- eval holdout --score

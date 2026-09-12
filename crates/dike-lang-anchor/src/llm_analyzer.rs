@@ -4,11 +4,11 @@
 //! parse, validate citations, emit. Two properties are load-bearing and each
 //! has a test that cannot be satisfied by reading the prompt file:
 //!
-//! - **The prompt never contains Track 1's findings (D29).** Not as context,
+//! - **The prompt never contains Track 1's findings.** Not as context,
 //!   not as hints, not as a "check these" list. If Track 2 is told what the
 //!   static track found, corroboration is circular and every eval number
 //!   built on it is self-congratulatory.
-//! - **The prompt never tells the model to skip what Track 1 covers (D30).**
+//! - **The prompt never tells the model to skip what Track 1 covers.**
 //!   That instruction would suppress exactly the overlap `merge_key`
 //!   collision detection exists to find, making `Track::Corroborated`
 //!   unreachable. Two independent methods agreeing is the strongest signal
@@ -36,7 +36,7 @@ const SYSTEM_PROMPT: &str = include_str!("../prompts/track2.md");
 /// Retrieval-grounded review of one handler at a time.
 pub struct LlmAnalyzer {
     pub client: Box<dyn LlmClient>,
-    /// A trait, not a concrete retriever (D19), so this is testable with a
+    /// A trait, not a concrete retriever, so this is testable with a
     /// stub and no model or corpus.
     pub retriever: Box<dyn Retrieve>,
     pub top_k: usize,
@@ -182,7 +182,7 @@ impl Analyzer for LlmAnalyzer {
                 };
                 // A finding pointing at line 0 destroys trust in every other
                 // line number in the report, so an absent line falls back to
-                // the handler's own (the rule Task 10 applies to attr_line).
+                // the handler's own (the same rule that applies to attr_line).
                 let mut raw = raw;
                 if raw.line.unwrap_or(0) == 0 {
                     raw.line = Some(handler.line);
@@ -428,7 +428,7 @@ pub struct W<'info> {
         .analyze(&fixture_tree());
         for req in client.requests() {
             let all = format!("{} {}", req.system, req.user);
-            assert!(!all.contains("Track 1"), "D29: no static results in the prompt");
+            assert!(!all.contains("Track 1"), "no static results in the prompt");
             assert!(!all.contains("static_track"));
             assert!(
                 !all.contains("missing-signer at line"),
@@ -439,13 +439,14 @@ pub struct W<'info> {
 
     #[test]
     fn the_prompt_does_not_tell_the_model_to_skip_what_track_1_covers() {
-        // D30. That instruction would suppress exactly the overlap
+        // the second independence rule. That instruction would suppress exactly
+        // the overlap
         // `merge_key` collision detection exists to find, making
         // `Track::Corroborated` unreachable.
         // Phrase-level, not word-level: an earlier version of this test
         // banned the bare word "already" and fired on a rule that said the
         // opposite ("do not assume anything has already been checked"),
-        // which is an instruction *against* skipping. What D30 forbids is
+        // which is an instruction *against* skipping. What the rule forbids is
         // telling the model that something else covers a class.
         let lowered = SYSTEM_PROMPT.to_lowercase();
         for phrase in [
@@ -462,14 +463,14 @@ pub struct W<'info> {
         ] {
             assert!(
                 !lowered.contains(phrase),
-                "D30: the prompt must not steer the model away from any class — found {phrase:?}"
+                "the prompt must not steer the model away from any class — found {phrase:?}"
             );
         }
     }
 
     #[test]
     fn the_prompt_states_the_class_vocabulary_so_findings_can_be_matched() {
-        // Found live in Task 21: left free, the model answers with labels of
+        // Found live against a real model: left free, it answers with labels of
         // its own invention. `Finding::merge_key` is `(handler_id, class)`,
         // so a Track 2 finding can only corroborate a Track 1 one when the
         // class strings match exactly.
@@ -610,7 +611,7 @@ pub struct W<'info> {
         let merged = dike_core::merge::merge(stat, llm);
         assert!(
             merged.iter().any(|f| f.track == Track::Corroborated),
-            "D30: overlap between tracks is the product, not waste"
+            "overlap between tracks is the product, not waste"
         );
     }
 
@@ -655,7 +656,7 @@ pub struct W<'info> {
     /// 2026-09-06 Track 2 run scored `removed-guard` at 0/3 partly because the
     /// prompt never offered the label, so the model could not have used it.
     /// `Finding::merge_key` is `(handler_id, class)`, so a class the prompt
-    /// omits cannot corroborate a Track 1 finding either (D4).
+    /// omits cannot corroborate a Track 1 finding either.
     ///
     /// This fails if a class constant is added to `detectors` and not to the
     /// prompt — the drift that produced the bug.

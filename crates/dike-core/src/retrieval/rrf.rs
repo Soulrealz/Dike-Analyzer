@@ -5,7 +5,7 @@
 //! 1-based ranks and `k = 60`. Rank fusion needs no calibration and no tuning
 //! constant per corpus.
 //!
-//! **The grounding gate (D11) never thresholds the fused score.** An RRF score
+//! **The grounding gate never thresholds the fused score.** An RRF score
 //! is rank-derived, so its magnitude carries no relevance information: the
 //! first document in a list of garbage scores `1/61`, exactly what a perfect
 //! match scores. Grounding therefore asks the component legs.
@@ -46,10 +46,10 @@ use std::collections::BTreeMap;
 
 use crate::retrieval::document::Document;
 
-/// The `k` in the RRF denominator (spec §7).
+/// The `k` in the RRF denominator.
 pub const RRF_K: f32 = 60.0;
 
-/// A dense cosine at or above this counts as evidence for grounding (D11).
+/// A dense cosine at or above this counts as evidence for grounding.
 ///
 /// Calibrated against the real corpus with BGE-small-en v1.5 — see the module
 /// docs for the measurement and why 0.35 (the spec's value) accepted

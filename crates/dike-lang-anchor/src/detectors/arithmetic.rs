@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn flags_compound_assignment_arithmetic() {
-        // Task 8 fixed a bug where `+=`/`-=`/`*=`/`/=` (parsed by syn 2.x as
+        // A fixed bug: `+=`/`-=`/`*=`/`/=` (parsed by syn 2.x as
         // `Expr::Binary` with a `BinOp::*Assign`, not `Expr::Assign`) were
         // invisible to the IR, silently defeating this whole detector class.
         // That fix is tested at the parser layer; this pins the same
