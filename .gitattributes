@@ -1,0 +1,27 @@
+# Line endings are LF, everywhere, for everyone.
+#
+# This repository is worked on from WSL and from Windows against the same
+# working tree, and Git for Windows ships `core.autocrlf = true` in its system
+# config. Without the rule below, a `git add` from the Windows side announces
+# that it will rewrite every LF file to CRLF, and the two sides disagree about
+# what the file on disk should look like.
+#
+# `.gitattributes` beats `core.autocrlf`, so this settles it in the repository
+# rather than in one machine's configuration: text files are stored with LF and
+# checked out with LF on every platform. `text=auto` still lets Git detect
+# binary content and leave it alone.
+* text=auto eol=lf
+
+# Belt and braces for the files this repository actually holds. Anything Git
+# might misread as text stays byte-exact.
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.lock    text eol=lf
+justfile  text eol=lf
+
+*.png     binary
+*.jpg     binary
+*.pdf     binary

@@ -110,7 +110,7 @@ which is itself a drop. More cases is the answer here, not a revert.
 What the probes did surface, on the real retriever rather than a hand-written
 document: Track 2 returns an empty array for most units, and the one finding it
 did produce on `leaky_vault` was classed `pitfall` — not the vocabulary — and
-cited a **URL** rather than an offered `doc_id`, so the grounding filter (D12)
+cited a **URL** rather than an offered `doc_id`, so the grounding filter
 correctly dropped it. Retrieval and citation discipline, not output format, are
 where Track 2 is losing.
 
@@ -147,7 +147,7 @@ where Track 2 is losing.
 │   │   │   ├── http.rs        The single HTTP surface (corpus fetch, embedder, LLM client)
 │   │   │   ├── llm/           LlmClient seam, Ollama and Gemini backends, structured output
 │   │   │   ├── eval/         MutationLabel, Mutant, EvalCase; mutant materialization
-│   │   │   │   │               and the `cargo check` validity gate (D14)
+│   │   │   │   │               and the `cargo check` validity gate
 │   │   │   │   ├── differential.rs  original-vs-mutant diff: what the mutation caused
 │   │   │   │   ├── holdout.rs   scoring published defects: outcomes, recall, rendering
 │   │   │   │   ├── metrics.rs   per-class, per-track recall/precision + noise floor
@@ -183,7 +183,7 @@ where Track 2 is losing.
 │       └── plans/             Phased implementation plans
 ├── tests/fixtures/programs/   Anchor fixture programs, parsed as text
 │   ├── vault/                 the clean one, and the mutation source. HAS a Cargo.toml:
-│   │                           it is the only fixture the eval harness builds (D14).
+│   │                           it is the only fixture the eval harness builds.
 │   │                           Its `constraint = ...` expressions are the only
 │   │                           `removed-guard` sites that exist — see "Quirks"
 │   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it.
@@ -269,8 +269,8 @@ These are load-bearing. Breaking one is a defect, not a preference.
 | 12 | `RetrievalHit::dense_score` is `None` only when the dense leg did not run | `HybridRetriever::search` backfills via `VectorStore::scores_for`; the grounding gate reads this distinction |
 | 13 | A mutant carries exactly one injected defect, labelled by the operator that made the edit | `mutations::operators` — one mutant per site, and `MutationLabel` is built at the edit, never inferred |
 | 14 | A mutant is still a parseable program | `dike-lang-anchor/tests/mutants_are_valid_rust.rs` |
-| 15 | A mutant that does not compile is never scored (D14) | `eval::compile_gate`; `dike eval mutate` moves a rejected case to `rejected/` and records the compiler's own reason |
-| 16 | A finding the analyzer already made on the clean program is never scored as a detection | `eval::differential::diff_runs` — it is `persistent`, the noise floor, attributable to neither side (spec §8) |
+| 15 | A mutant that does not compile is never scored | `eval::compile_gate`; `dike eval mutate` moves a rejected case to `rejected/` and records the compiler's own reason |
+| 16 | A finding the analyzer already made on the clean program is never scored as a detection | `eval::differential::diff_runs` — it is `persistent`, the noise floor, attributable to neither side |
 | 17 | The eval history is append-only and written atomically | `eval::history::append_history` — temp file + rename, and a missing file is an error, never a fresh series |
 
 ---
@@ -350,7 +350,7 @@ real constraint. Ordinary choices need no justification.
   generation call needs minutes where a corpus fetch needs seconds, and one
   backend authenticates with a header. Letting the LLM clients build their own
   `reqwest` requests instead would duplicate the connection-refused-to-
-  `Unavailable` mapping that D24 exists to centralise.
+  `Unavailable` mapping this module exists to centralise.
 
 - **The generation request caps output tokens (`num_predict`).** Measured on
   2026-09-01: one handler consumed the entire 120-second per-unit budget twice
@@ -360,9 +360,9 @@ real constraint. Ordinary choices need no justification.
   logged drop. With it, the clean fixture went from 3/4 units examined in 2m43
   to 4/4 in 1m01.
 
-- **A hallucinated citation deletes itself, and an uncited finding is dropped
-  (D12).** `validate_citations` keeps only ids that were actually offered to the
-  model. Without it, "cite your sources" is a request the model can decline
+- **A hallucinated citation deletes itself, and an uncited finding is
+  dropped.** `validate_citations` keeps only ids that were actually offered to
+  the model. Without it, "cite your sources" is a request the model can decline
   silently, and grounding becomes decoration rather than a filter. Duplicate
   citations collapse first, because `track2_confidence` reads the count — citing one
   document twice must not buy the same up-weighting as citing two.
@@ -374,7 +374,7 @@ real constraint. Ordinary choices need no justification.
   make "the model reviewed this and found nothing" indistinguishable from "the model
   is not running", and the report would claim coverage the run never had.
 
-- **HTML headings are re-emitted as Markdown headings (D31).** `chunk_by_finding`
+- **HTML headings are re-emitted as Markdown headings.** `chunk_by_finding`
   splits on Markdown headings and finding-ID tokens, and a stripped HTML page has
   neither — so every fetched page became *one* document. Measured on the live
   corpus before the fix: the constraint reference was a single 11 KB chunk and the
@@ -403,8 +403,8 @@ real constraint. Ordinary choices need no justification.
   about relevance: the top document of a garbage list scores `1/61`, exactly
   what a perfect match scores.
 
-- **The grounding thresholds are measured, not inherited from the spec (D11,
-  revised 2026-08-31).** The spec's "dense ≥ 0.35 OR any non-zero BM25" accepted
+- **The grounding thresholds are measured, not inherited from the spec**
+  (revised 2026-08-31). The spec's "dense ≥ 0.35 OR any non-zero BM25" accepted
   every query, including nonsense ones. Measured over the real 358-document
   corpus with BGE-small-en v1.5, best score per query: off-topic queries reach
   dense **0.566** and BM25 **16.0**; on-topic queries bottom out at dense
@@ -446,7 +446,7 @@ real constraint. Ordinary choices need no justification.
 
 - **`tests/fixtures/programs/vault` is a real crate; `leaky_vault` is not.**
   Reverses the earlier "fixture programs have no `Cargo.toml`" decision, for the
-  exception that decision already anticipated: the mutation-validity gate (D14)
+  exception that decision already anticipated: the mutation-validity gate
   runs `cargo check` over every mutant, and it needs something buildable. The
   alternative — a second, buildable copy of the same program under a separate
   eval fixture directory — was rejected because the two copies drift, and an
@@ -459,7 +459,7 @@ real constraint. Ordinary choices need no justification.
 - **The `declare_id!` in a fixture has to be a real 32-byte key.** The clean
   fixture carried `Vau1t1111…` (30 bytes) from the day it was written; nothing
   noticed, because until the validity gate existed nothing ever compiled it. It
-  is now the standard placeholder. This is the first thing D14 caught, and it
+  is now the standard placeholder. The validity gate caught it first, and
   caught it in the fixture rather than in a mutant — which is the argument for
   the gate in miniature.
 
@@ -495,7 +495,7 @@ real constraint. Ordinary choices need no justification.
   `has_one`, or a `seeds`/`bump` expression that reads the field's own data —
   all four are defined against the deserialized type. A mutant Anchor rejects is
   not a hard case for the analyzer, it is one the harness never gets to score,
-  and it would be dropped by Task 24's compile gate anyway; the cheaper place to
+  and it would be dropped by the compile gate anyway; the cheaper place to
   know that is at the operator, where the reason is visible.
 
 - **The two wrapper operators insert a `/// CHECK:` doc comment.** Anchor
@@ -534,7 +534,7 @@ real constraint. Ordinary choices need no justification.
   finding invisible, and every label unmatched — the harness would report 0%
   recall and 100% noise with nothing actually wrong. Dropping the file is safe
   because a handler name identifies an instruction uniquely within a program,
-  which is the granularity findings are already compared at (D5).
+  which is the granularity findings are already compared at.
 
 - **`diff_runs` takes the *unmerged* per-track findings.** Merging first
   collapses a static and an LLM finding on the same handler and class into one
@@ -545,8 +545,8 @@ real constraint. Ordinary choices need no justification.
 - **`CaseOutcome::introduced` includes the true positive; `false_positives()` is
   the subset that does not match the label.** Keeping the matching findings in
   the list preserves their evidence and confidence for a per-case report; a
-  boolean `detected` alone would throw that away, and Task 26 needs both counts
-  out of the same structure.
+  boolean `detected` alone would throw that away, and the metrics pass needs
+  both counts out of the same structure.
 
 - **`MetricTrack` is not `Track`.** The three views the spec asks for are
   static, LLM and **merged**, and merged is the *union* — what the tool as a
@@ -618,7 +618,7 @@ real constraint. Ordinary choices need no justification.
 - **`absorbed_handlers` is a field because a machine reads it.** The subject
   collapse folds one defect seen from many handlers into one row, and the row
   has always named the handlers it swallowed in its `evidence` prose. The
-  holdout scorer compares per handler (D5), so it needs that list too — and
+  holdout scorer compares per handler, so it needs that list too — and
   parsing it back out of an English sentence would mean that rewording the
   sentence silently turns every absorbed hit into a miss. The sentence is now
   rendered *from* the field, so the two cannot disagree. The general rule:
@@ -754,9 +754,9 @@ notes and *is* committed.
   `PrivilegedOperationWithoutAuthentication` rather than `missing-signer`.
   `Finding::merge_key` is `(handler_id, class)`, so a Track 2 finding can only
   corroborate a Track 1 one when the class strings match exactly — with free-form
-  labels, corroboration (D4) would essentially never fire and every LLM finding
-  would arrive as a separate, uncorroborated row. Task 22's prompt must pass the
-  known class vocabulary (the constants in
+  labels, corroboration would essentially never fire and every LLM finding
+  would arrive as a separate, uncorroborated row. The Track 2 prompt must pass
+  the known class vocabulary (the constants in
   `dike-lang-anchor/src/detectors/mod.rs`) and constrain the model to it; the CLI
   is the place that can see both sides of the seam to do that.
 - Three audit-report sources in `corpus/sources.toml` are commented out: they are
@@ -852,7 +852,7 @@ notes and *is* committed.
   the most-cited Solana disclosures are native programs, which yield zero
   handlers and would measure the parser's scope rather than detector recall.
   **That conflict is settled (2026-09-12).** The collapse above reports one row
-  per `(class, subject)` while the holdout compares per handler (D5) — verified
+  per `(class, subject)` while the holdout compares per handler — verified
   on the WOOFi case, where Dike finds the defect but reports it under a
   different handler with the real one among 17 absorbed. `Finding` now carries
   `absorbed_handlers`, and the scorer counts a case as a hit when its handler is
@@ -926,11 +926,12 @@ notes and *is* committed.
   Observed 2026-09-06 on `leaky_vault` with the real retriever: the one finding
   the model produced was classed `pitfall` and cited
   `https://docs.solana.com/...` rather than the `doc_id` the prompt offered, so
-  the grounding filter (D12) dropped it. `validate_citations` now resolves a
+  the grounding filter dropped it. `validate_citations` now resolves a
   citation by id, source URL *or* title, so naming an offered document any way
   it was shown counts — but that did not recover this finding and was never
   going to: the URL names no offered document at all, which makes it a genuine
-  hallucination rather than a naming mismatch, and D12 is right to drop it.
+  hallucination rather than a naming mismatch, and the filter is right to drop
+  it.
   What remains is the label half, which has a measurable cost:
   `Finding::merge_key` is `(handler_id, class)`, so an invented label can never
   corroborate a Track 1 finding. A schema `enum` on `class` would forbid the
@@ -955,13 +956,13 @@ notes and *is* committed.
 - **`removed-guard` now has cases but still has no number.** The clean fixture
   grew three `constraint = ...` expressions on 2026-09-06 so `strip_constraint`
   has sites at all — before that the class had never produced a single mutant,
-  and its `0.000` said nothing. It is Track-2-only by design (D16), so Track 1
+  and its `0.000` said nothing. It is Track-2-only by design, so Track 1
   scoring it 0/3 is correct, not a gap. The gap is that Track 2 has never been
   scored, so the class the harness now measures is still unmeasured.
 - `benchmarks/holdout/cases.toml` holds six verified cases (2026-09-06) and
   `dike eval holdout --score` can now score them, but the scored run has not
   been spent: `runs.json` is still `[]`. Four of the six cases are
-  `removed-guard`, which is Track-2-only (D16), and the holdout scorer runs
+  `removed-guard`, which is Track-2-only, and the holdout scorer runs
   Track 1 only — so a run today measures Track 1 against a set it can reach
   two cases of. The command warns about exactly this before it scores.
 - The CI LLM job is a build check, not a scored run: GitHub runners have no GPU,

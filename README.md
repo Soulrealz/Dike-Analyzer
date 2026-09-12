@@ -153,7 +153,7 @@ just eval-fast     # …skipping the validity gate. For iterating, never for num
 just eval          # Both tracks. Needs Ollama running and an indexed corpus.
 just holdout       # List the real holdout and its memorization caveat.
 just holdout-dry   # The scoring path, offline. Records nothing, spends no run.
-just holdout-score # THE scored run. Once, ever (spec §8). Clones each program.
+just holdout-score # THE scored run. Once, ever. Clones each program.
 
 # Or the commands underneath:
 dike eval mutate tests/fixtures/programs/vault --out target/mutants
