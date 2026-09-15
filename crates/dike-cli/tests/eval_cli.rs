@@ -133,6 +133,48 @@ fn the_holdout_command_leads_with_the_memorization_caveat() {
     );
 }
 
+/// The CI regression of 2026-09-15. `Swatinem/rust-cache` caches all of
+/// `target/`, so a later run finds `target/eval/vault` restored with its
+/// children but without the `.dike-eval` marker this tool writes, and refuses
+/// to clear a directory it can no longer prove it created.
+///
+/// Refusing is correct and stays. What has to hold is that the message names
+/// the way out, because the person reading it is looking at a red build and
+/// has no reason to know the marker file exists.
+#[test]
+fn a_work_dir_this_tool_does_not_own_fails_with_a_recoverable_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("eval");
+    std::fs::create_dir_all(work.join("vault/cases/leftover")).unwrap();
+    std::fs::write(work.join("vault/cases/leftover/x.rs"), "stale").unwrap();
+    let history = dir.path().join("history.json");
+    std::fs::write(&history, "[]").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dike"))
+        .args([
+            "eval", "run", "tests/fixtures/programs/vault", "--track", "static",
+            "--no-compile-check", "--out",
+        ])
+        .arg(&history)
+        .arg("--work-dir")
+        .arg(&work)
+        .current_dir(repo_root())
+        .output()
+        .expect("running dike");
+
+    assert!(!output.status.success(), "a directory we do not own was cleared anyway");
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        message.contains("--work-dir"),
+        "the message must name the flag that resolves it: {message}"
+    );
+    assert!(work.join("vault/cases/leftover/x.rs").exists(), "it deleted the contents");
+}
+
 /// The same run with the validity gate on. Ignored by default: it builds the
 /// fixture's dependency tree, which needs the network on a cold machine
 /// (CLAUDE.md Rule 8). This is what `just eval-static` runs.

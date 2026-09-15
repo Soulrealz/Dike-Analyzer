@@ -9,7 +9,7 @@ It is referenced by the `notes-local` entry in `corpus/sources.toml`
 whatever is placed here directly, with no network access involved.
 
 Unlike fetched sources under `corpus/cache/` — which are gitignored because
-their licensing does not permit redistribution (see spec §7 licensing) —
+their licensing does not permit redistribution —
 files in this directory are original work and are safe, and expected, to be
 committed to version control.
 

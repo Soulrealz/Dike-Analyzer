@@ -225,8 +225,28 @@ pub fn run(cfg: EvalRunConfig) -> anyhow::Result<()> {
                 program.display()
             );
         }
-        let cases = materialize(program, mutants, &out_dir)
-            .with_context(|| format!("materializing into {}", out_dir.display()))?;
+        let cases = materialize(program, mutants, &out_dir).map_err(|e| {
+            // The refusal is a safety guard, not a bug: without the marker
+            // file this tool writes, clearing the directory could delete
+            // somebody's source tree. But the person reading it is usually
+            // looking at a red build with no reason to know the marker
+            // exists, so the way out belongs in the message.
+            //
+            // It happens whenever something restores the work directory's
+            // children without the marker. A build cache over `target/` does
+            // exactly that, which is how CI hit it on 2026-09-15.
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow::anyhow!(
+                    "{e}. Point --work-dir at a directory this tool owns (somewhere outside \
+                     a cached `target/`, such as the runner's temp directory in CI), or \
+                     delete {} yourself once you have checked what is in it",
+                    out_dir.display()
+                )
+            } else {
+                anyhow::Error::new(e)
+            }
+        })
+        .with_context(|| format!("materializing into {}", out_dir.display()))?;
         let (cases, rejected) = if cfg.no_compile_check {
             (cases, Vec::new())
         } else {

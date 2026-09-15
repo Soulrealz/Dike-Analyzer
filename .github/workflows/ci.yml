@@ -41,8 +41,16 @@ jobs:
       - name: Clean fixture reports nothing
         run: cargo run -p dike-cli -- analyze tests/fixtures/programs/vault
 
+      # `--work-dir` is deliberately outside `target/`. `Swatinem/rust-cache`
+      # caches all of `target/`, and a restored `target/eval/vault` arrives
+      # with its children but without the `.dike-eval` marker the harness
+      # writes — so the harness refuses to clear a directory it can no longer
+      # prove it created, and the job fails before it evaluates anything. It is
+      # also just true that eval scratch space is not a build artifact.
       - name: Static eval
-        run: cargo run -p dike-cli -- eval run tests/fixtures/programs/vault --track static
+        run: |
+          cargo run -p dike-cli -- eval run tests/fixtures/programs/vault \
+            --track static --work-dir "${RUNNER_TEMP}/dike-eval"
 
       # `eval run` appends to benchmarks/history.json. CI must not commit that —
       # a series entry per push would bury the runs anyone actually cares about.
@@ -51,7 +59,7 @@ jobs:
 
   # Optional, and never a reason for a red build: it needs a key that forks and
   # most contributors do not have. Track 2's own model runs locally and GitHub
-  # runners have no GPU (spec §8), so a hosted frontier model is the only way to
+  # runners have no GPU, so a hosted frontier model is the only way to
   # exercise the LLM path in CI at all.
   llm-smoke:
     runs-on: ubuntu-latest

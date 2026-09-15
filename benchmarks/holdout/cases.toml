@@ -12,7 +12,7 @@
 # output. Add cases from verified sources or add none. A holdout of zero cases
 # is honest, a holdout of plausible fiction is not.
 #
-# Two rules, both from the spec (§8), and both enforced by `dike eval holdout`:
+# Two rules, both enforced by `dike eval holdout`:
 #
 #   1. This set is touched ONLY AT THE END. Iterating against it is tuning on
 #      the test set, and the number stops meaning anything the moment you do.
@@ -31,7 +31,7 @@
 #   commit   = "full 40-character hash"     # the commit that CONTAINED the bug
 #   path     = "programs/x/src/lib.rs"      # file the finding sits in
 #   handler  = "verify_signatures"          # instruction handler; the unit
-#                                           #   findings are compared at (D5)
+#                                           #   findings are compared at
 #   class    = "missing-owner-check"        # one of the classes in
 #                                           #   dike-lang-anchor/src/detectors/mod.rs,
 #                                           #   or the harness scores a correct
@@ -72,7 +72,7 @@
 # KNOWN CONFLICT with `merge::collapse_by_subject`, found while verifying
 # these and not yet resolved. Dike collapses one defect seen from several
 # handlers into a single row, naming the absorbed handlers in the evidence.
-# This holdout compares at handler granularity (D5). Verified on
+# This holdout compares at handler granularity. Verified on
 # `woofi-create-wooracle-unbound-admin`: Dike DOES report that defect, but
 # under `set_oracle_maximum_age`, with `create_wooracle` and `create_pool`
 # among 17 absorbed handlers - so a handler-granularity scorer would call it a
@@ -101,7 +101,7 @@ source   = "https://github.com/cashioapp/cashio/commit/7df658184c2610139fa2c0058
 # secondary account of the incident.
 # Classed `removed-guard`: `crate_mint` is a typed `Account<Mint>`, so Anchor
 # proves it is *a* mint and the missing check is an identity constraint rather
-# than an owner check. Track 1 has no detector for this class by design (D16).
+# than an owner check. Track 1 has no detector for this class by design.
 
 [[case]]
 id       = "woofi-create-wooracle-unbound-admin"
@@ -127,7 +127,7 @@ class    = "missing-authority-binding"
 severity = "medium"
 source   = "https://github.com/sherlock-audit/2024-08-woofi-solana-deployment-judging/issues/54"
 # The second handler named by the same judged finding (M-2). Its own case
-# because the comparison unit is the handler (D5), not the report.
+# because the comparison unit is the handler, not the report.
 
 [[case]]
 id       = "woofi-swap-quote-pool-not-enforced"

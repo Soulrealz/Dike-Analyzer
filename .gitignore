@@ -34,6 +34,14 @@
 *.db-journal
 *.db-wal
 
+# ---- Working notes, not project history ---------------------------------
+# `learning/` is a personal crate-by-crate tutorial and `docs/next_steps*.md`
+# are session handoffs. Both are working material that churns every session;
+# keeping them out of the index is what makes `git add .` safe here. The
+# durable decisions from them belong in docs/PROJECT_CONTEXT.md.
+/learning/
+/docs/next_steps*.md
+
 # ---- Agent scaffolding --------------------------------------------------
 # SDD task briefs, implementer reports and the run ledger. Working state for
 # AI-assisted development, not project history. Durable decisions from it are
