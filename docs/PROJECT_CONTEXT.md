@@ -66,8 +66,9 @@ clean code.
 clean fixture, 0 refused by the validity gate. Track 1 reaches recall **1.000**
 and precision **1.000** on `missing-signer`, `missing-owner-check`,
 `missing-authority-binding` and `unchecked-arithmetic`, at a noise floor of
-**0**. `pda-validation-gap` scores **0.000** — see "Known gaps"; the harness
-found that on its first run, which is what it is for.
+**0**. `pda-validation-gap` scored **0.000** — the harness found that on its
+first run, which is what it is for. It reaches **1.000** since 2026-09-12; see
+the quirk below.
 
 **The fixture now yields 19 mutants (2026-09-06).** Three `constraint = ...`
 expressions were added to the clean fixture so `strip_constraint` has sites;
@@ -763,20 +764,33 @@ notes and *is* committed.
   PDF corpora, and the fetch pipeline reads no PDFs. Two MIT-licensed Markdown
   sources now cover the same classes, so this may never need solving — see the
   commented block in `corpus/sources.toml`.
-- **`pda-validation-gap` cannot fire on a compilable program.**
-  `PdaValidationGapDetector` filters on `has_seeds() != has_bump()` — an
-  inconsistent pair — and Anchor rejects that at compile time. Verified
-  2026-09-03 against `anchor-lang` 0.30: `seeds` without `bump` fails with
-  "bump must be provided with seeds". So the detector is unreachable on real
-  code, while `strip_seeds_bump` removes an entire PDA constraint, which is a
-  genuine defect the detector was never built to see. The eval harness surfaced
-  this on its first scored run. The class stays in the table at 0.000 rather
-  than being excluded, and
-  `crates/dike-cli/tests/eval_cli.rs::pda_validation_gap_is_not_yet_detectable_and_this_test_is_the_reminder`
-  fails the moment somebody fixes it. Fixing it is a detector design question —
-  what a missing PDA constraint looks like in code that compiles — and it moves
-  a pinned confidence, so it invalidates the history series and belongs in its
-  own change.
+- **`pda-validation-gap` fires on a cross-handler inconsistency, because the
+  shape it used to look for cannot compile (fixed 2026-09-12).** The detector
+  filtered on `has_seeds() != has_bump()` — an inconsistent pair — and Anchor
+  rejects that at compile time. Verified 2026-09-03 against `anchor-lang` 0.30:
+  `seeds` without `bump` fails with "bump must be provided with seeds". So it
+  was unreachable on real code and scored 0.000 for three days while
+  `strip_seeds_bump`, which removes an entire PDA constraint, injected a
+  genuine defect it was never built to see.
+
+  What it looks for now: an account whose type **this program derives with
+  `seeds` in some other accounts struct**, declared here with no `seeds` and no
+  `address`. The program itself supplies the evidence that the account is a
+  PDA, which is what makes the rule quiet — an account no handler ever derives
+  yields nothing, so the detector does not fire on every account in every
+  program. `Account<'info, T>` still proves owner and discriminator, so this is
+  not forgery; it is that any other `T` the program owns is accepted, including
+  one the caller created.
+
+  Measured: recall **1.000** (4/4) and precision **1.000** on the mutants, noise
+  floor still **0** on the clean fixture, and **0 findings** across 7,211 LOC of
+  three real Anchor programs that use `seeds` 75 times between them and reuse
+  one account type across as many as 21 declarations. The old inconsistent-pair
+  arm is kept: it costs one comparison and is still the right answer for source
+  that does not compile, which a triage tool does get handed.
+
+  The pinned confidence (0.65) did not move, so the history series stays
+  comparable; the per-class recall row did, deliberately.
 - **Corpus chunks carry their ancestor headings, and are capped at 1500 chars.**
   A source structured `### Missing signer check` / `#### Example` used to split
   so the Example chunk was titled just "Example" with the defect named in

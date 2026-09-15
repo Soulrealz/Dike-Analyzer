@@ -55,9 +55,9 @@ fn static_eval_runs_end_to_end_without_a_model_and_exits_zero() {
     assert_eq!(summary.corpus_hash, None);
 }
 
-/// Four of the five Track 1 classes have a mutation operator whose injected
-/// defect the detector is built to see. Anything below 1.0 here is a detector
-/// regression, not a model result.
+/// Every Track 1 class has a mutation operator whose injected defect the
+/// detector is built to see. Anything below 1.0 here is a detector regression,
+/// not a model result.
 #[test]
 fn static_eval_detects_every_class_with_a_reachable_detector() {
     let dir = tempfile::tempdir().unwrap();
@@ -68,6 +68,10 @@ fn static_eval_detects_every_class_with_a_reachable_detector() {
         "missing-owner-check",
         "missing-authority-binding",
         "unchecked-arithmetic",
+        // Reachable since 2026-09-12. The detector used to fire only on an
+        // inconsistent `seeds`/`bump` pair, which Anchor rejects at compile
+        // time, so it could not fire on any program that builds.
+        "pda-validation-gap",
     ] {
         let m = summary
             .per_class
@@ -82,39 +86,6 @@ fn static_eval_detects_every_class_with_a_reachable_detector() {
             m.precision
         );
     }
-}
-
-/// **This test pins a known defect, and it is meant to fail when the defect is
-/// fixed.**
-///
-/// `PdaValidationGapDetector` fires only on `has_seeds() != has_bump()` — an
-/// inconsistent pair. That condition cannot occur in a program Anchor will
-/// compile: verified on 2026-09-03 against `anchor-lang` 0.30, `seeds` without
-/// `bump` is rejected at compile time with "bump must be provided with seeds".
-/// So the detector cannot fire on any real program, and `strip_seeds_bump`,
-/// which removes a whole PDA constraint, injects a defect Track 1 cannot see.
-///
-/// Nothing is silently excluded to keep the numbers pretty: the class stays in
-/// the table at 0.000. When somebody teaches the detector what a missing PDA
-/// constraint looks like, this test goes red and the expectation above moves
-/// here.
-#[test]
-fn pda_validation_gap_is_not_yet_detectable_and_this_test_is_the_reminder() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_, summary) = run_static_eval(dir.path(), &["--no-compile-check"]);
-
-    let m = summary
-        .per_class
-        .iter()
-        .find(|m| m.class == "pda-validation-gap" && m.track == dike_core::eval::MetricTrack::Static)
-        .expect("pda-validation-gap must stay in the table, at whatever it scores");
-    assert!(m.total_cases > 0, "the operator stopped producing cases");
-    assert_eq!(
-        m.recall, 0.0,
-        "pda-validation-gap now scores {}; if the detector was fixed, move it into \
-         static_eval_detects_every_class_with_a_reachable_detector and delete this test",
-        m.recall
-    );
 }
 
 /// The clean fixture is the mutation source; a non-zero noise floor on it means

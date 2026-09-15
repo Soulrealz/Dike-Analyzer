@@ -32,12 +32,14 @@ just eval-static     # no model, no network — the mode CI runs
 | `missing-authority-binding` | static |  1.000 |        3 |     3 |     1.000 |
 | `missing-owner-check`       | static |  1.000 |        4 |     4 |     1.000 |
 | `missing-signer`            | static |  1.000 |        3 |     3 |     1.000 |
-| `pda-validation-gap`        | static |  0.000 |        0 |     4 |         - |
+| `pda-validation-gap`        | static |  1.000 |        4 |     4 |     1.000 |
 | `unchecked-arithmetic`      | static |  1.000 |        2 |     2 |     1.000 |
 ```
 
-The `0.000` is real, and it is the harness working as intended on its first run.
-See [Known gaps](#known-gaps).
+Every class with a Track 1 detector is at 1.000 there. `pda-validation-gap` sat
+at 0.000 for three days first: the harness caught a detector that could not fire
+on any program Anchor will compile, which is what it is for. See
+[Known gaps](#known-gaps) for what is still missing.
 
 ## Requirements
 
@@ -124,7 +126,7 @@ rather than a regression.
 | `missing-signer` | yes | yes | Critical | 0.90 | A privileged-looking account is not a `Signer` and nothing else pins it |
 | `missing-owner-check` | yes | yes | High | 0.75 | An unchecked wrapper with nothing pinning its identity |
 | `missing-authority-binding` | yes | yes | High | 0.70 | A stored authority field is never validated against the caller |
-| `pda-validation-gap` | yes | yes | High | 0.65 | An account's PDA derivation is not pinned |
+| `pda-validation-gap` | yes | yes | High | 0.65 | An account this program derives with `seeds` elsewhere is taken here without pinning the derivation |
 | `unchecked-arithmetic` | yes | yes | Medium | 0.35 | Bare arithmetic in a release-mode program, where overflow wraps |
 | `removed-guard` | no | yes | High | — | A `constraint = ...` guard is absent. Track 2 only, because the absence of an arbitrary expression is not a structural signal a detector can see |
 
@@ -192,16 +194,6 @@ runs against a frontier model, never for iteration.
 
 ## Known gaps
 
-- **`pda-validation-gap` scores 0.000 and that number is real.** The detector
-  fires on an *inconsistent* pair, `seeds` without `bump` or the reverse, and
-  that condition cannot occur in a program Anchor will compile. Verified against
-  `anchor-lang` 0.30: `seeds` without `bump` is rejected at compile time with
-  "bump must be provided with seeds". So the detector cannot fire on any real
-  program, while the mutation operator removes a whole PDA constraint, which is
-  a genuine defect it was never built to see. The class stays in the table at
-  zero instead of being quietly excluded, and
-  `crates/dike-cli/tests/eval_cli.rs` pins it so that fixing the detector breaks
-  a test rather than passing unnoticed.
 - **The holdout has six verified cases and has not been scored.**
   `benchmarks/holdout/cases.toml` was populated on 2026-09-06 from two public
   Solana audit contests (WOOFi and Orderly, accepted findings only) plus the
@@ -214,6 +206,14 @@ runs against a frontier model, never for iteration.
   `removed-guard`, which only Track 2 reports, while the scorer runs Track 1
   only — so a run today reaches two of the six. The command says so before it
   scores anything.
+- **Track 2 has never detected anything in a scored run.** Recall is 0.000 on
+  every class against `qwen2.5-coder:14b`, and that is a real measurement rather
+  than a broken pipe: the plumbing was fixed until dropped replies went from 36
+  to 0, and the number did not move. The model returns an empty array for most
+  units. The open question is whether retrieval is too coarse (one query per
+  handler, built from the whole handler description) or whether the local model
+  is the ceiling, and comparing it against a frontier model on the same
+  retrieved context is what would tell the two apart.
 - **`cargo fmt --check` is not a gate.** The house style is hand-formatted and no
   rustfmt configuration reproduces it, so the CI gate is `clippy`, which is
   deny-by-default here.

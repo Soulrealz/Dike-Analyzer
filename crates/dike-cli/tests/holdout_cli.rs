@@ -79,7 +79,11 @@ fn scoring_separates_hits_misses_and_cases_that_were_never_analyzed() {
     let cases = format!(
         "{}{}{}",
         case("hit", "withdraw", "missing-signer"),
-        case("miss", "withdraw", "pda-validation-gap"),
+        // `removed-guard` is Track-2-only by design, and this scorer runs
+        // Track 1, so it is a miss whatever the code says. Using a Track 1
+        // class here would tie the test to what the detectors happen to find
+        // in the fixture today.
+        case("miss", "withdraw", "removed-guard"),
         case("absent", "withdraw", "missing-signer"),
     );
 
@@ -88,7 +92,7 @@ fn scoring_separates_hits_misses_and_cases_that_were_never_analyzed() {
 
     assert!(stdout.starts_with("CAVEAT"), "{stdout}");
     assert!(stdout.contains("| `hit` | `missing-signer` | hit |"), "{stdout}");
-    assert!(stdout.contains("| `miss` | `pda-validation-gap` | miss |"), "{stdout}");
+    assert!(stdout.contains("| `miss` | `removed-guard` | miss |"), "{stdout}");
     assert!(stdout.contains("not scored: no checkout"), "{stdout}");
     // One hit out of the two that were analyzed. The unavailable case is out
     // of the denominator, so this is 1/2 rather than 1/3.
