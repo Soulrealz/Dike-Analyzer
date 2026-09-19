@@ -38,8 +38,14 @@ jobs:
 
       # Exit 0 with no findings on correct code is the pass condition, not a
       # formality: a detector that fires here is a false positive on every user.
-      - name: Clean fixture reports nothing
-        run: cargo run -p dike-cli -- analyze tests/fixtures/programs/vault
+      # Both mutation sources are clean programs. A finding on either is a
+      # false positive on every user — and `escrow` carries the shapes that
+      # produced four of them on real code, so a regression there is caught
+      # here rather than by the next adjudication.
+      - name: Clean fixtures report nothing
+        run: |
+          cargo run -p dike-cli -- analyze tests/fixtures/programs/vault
+          cargo run -p dike-cli -- analyze tests/fixtures/programs/escrow
 
       # `--work-dir` is deliberately outside `target/`. `Swatinem/rust-cache`
       # caches all of `target/`, and a restored `target/eval/vault` arrives
@@ -49,7 +55,8 @@ jobs:
       # also just true that eval scratch space is not a build artifact.
       - name: Static eval
         run: |
-          cargo run -p dike-cli -- eval run tests/fixtures/programs/vault \
+          cargo run -p dike-cli -- eval run \
+            tests/fixtures/programs/vault tests/fixtures/programs/escrow \
             --track static --work-dir "${RUNNER_TEMP}/dike-eval"
 
       # `eval run` appends to benchmarks/history.json. CI must not commit that —

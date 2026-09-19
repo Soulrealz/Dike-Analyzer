@@ -5,6 +5,27 @@ fn fixture() -> SourceTree {
     SourceTree::load(Path::new("../../tests/fixtures/programs/vault")).unwrap()
 }
 
+/// The second mutation source, and the regression guard for the two
+/// false-positive classes adjudicated on real code (2026-09-19).
+///
+/// `escrow` is correct code that pins an account from a *sibling* declaration
+/// and stages an authority. Both shapes produced false positives on real
+/// programs and neither could occur in `vault`, which is one file in which
+/// every account is pinned on its own declaration. Revert either fix and this
+/// goes red — verified by doing exactly that: three findings appear, one per
+/// adjudicated shape.
+#[test]
+fn the_escrow_fixture_is_clean() {
+    let tree = SourceTree::load(Path::new("../../tests/fixtures/programs/escrow")).unwrap();
+    let analysis = dike_lang_anchor::analyze_program(&tree);
+    assert_eq!(analysis.handlers, 7, "the fixture changed shape");
+    assert!(
+        analysis.result.findings.is_empty(),
+        "a finding on correct code is a false positive on every user: {:#?}",
+        analysis.result.findings
+    );
+}
+
 #[test]
 fn clean_fixture_produces_a_low_noise_floor() {
     let result = dike_lang_anchor::AnchorAnalyzer.analyze(&fixture());

@@ -19,7 +19,15 @@ fn run_static_eval(dir: &Path, extra: &[&str]) -> (String, dike_core::eval::Eval
     let work = dir.join("work");
 
     let output = Command::new(env!("CARGO_BIN_EXE_dike"))
-        .args(["eval", "run", "tests/fixtures/programs/vault", "--track", "static", "--out"])
+        .args([
+            "eval",
+            "run",
+            "tests/fixtures/programs/vault",
+            "tests/fixtures/programs/escrow",
+            "--track",
+            "static",
+            "--out",
+        ])
         .arg(&history)
         .arg("--work-dir")
         .arg(&work)
@@ -102,8 +110,9 @@ fn the_clean_fixture_has_no_noise_floor() {
     assert_eq!(noise.findings, 0, "the clean fixture now yields findings");
     // Pinned rather than bounded: the noise floor is findings-per-KLOC, so a
     // fixture that quietly grows dilutes it. Changing this number is a
-    // deliberate act that says the denominator moved for a reason.
-    assert_eq!(noise.loc, 166);
+    // deliberate act that says the denominator moved for a reason. It moved on
+    // 2026-09-19, when `escrow` joined `vault` as a second mutation source.
+    assert_eq!(noise.loc, 470);
 }
 
 /// The caveat is printed by the command so a summary downstream cannot drop it.

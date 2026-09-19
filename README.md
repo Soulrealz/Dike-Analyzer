@@ -29,16 +29,19 @@ just eval-static     # no model, no network — the mode CI runs
 ```
 | Class                       | Track  | Recall | Detected | Cases | Precision |
 |-----------------------------|--------|-------:|---------:|------:|----------:|
-| `missing-authority-binding` | static |  1.000 |        3 |     3 |     1.000 |
+| `missing-authority-binding` | static |  1.000 |        4 |     4 |     1.000 |
 | `missing-owner-check`       | static |  1.000 |        4 |     4 |     1.000 |
-| `missing-signer`            | static |  1.000 |        3 |     3 |     1.000 |
-| `pda-validation-gap`        | static |  1.000 |        4 |     4 |     1.000 |
+| `missing-signer`            | static |  1.000 |        5 |     5 |     1.000 |
+| `pda-validation-gap`        | static |  1.000 |       13 |    13 |     1.000 |
+| `removed-guard`             | static |  0.200 |        1 |     5 |     1.000 |
 | `unchecked-arithmetic`      | static |  1.000 |        2 |     2 |     1.000 |
 ```
 
-Every class with a Track 1 detector is at 1.000 there. `pda-validation-gap` sat
-at 0.000 for three days first: the harness caught a detector that could not fire
-on any program Anchor will compile, which is what it is for. See
+Scored over two clean programs, 27 mutants, at a noise floor of zero.
+`removed-guard`'s 0.200 is the mutants rather than the detector — two of its
+five cases guard a field on an `anchor_spl` type the analyzer has no
+definition for, one is a business rule nothing structural implies, and one is
+detected under a more precise class name. See
 [Known gaps](#known-gaps) for what is still missing.
 
 ## Requirements
@@ -118,8 +121,7 @@ text. Curate specific report URLs before the first real fetch.
 ## What it detects
 
 Per-track class coverage, declared up front so the eval table reads as
-information. A `0.000` in a row Track 1 does not cover is the expected result
-rather than a regression.
+information.
 
 | Class | Track 1 | Track 2 | Severity | Confidence | What it means |
 |---|:---:|:---:|---|---:|---|
@@ -128,7 +130,7 @@ rather than a regression.
 | `missing-authority-binding` | yes | yes | High | 0.70 | A stored authority field is never validated against the caller |
 | `pda-validation-gap` | yes | yes | High | 0.65 | An account this program derives with `seeds` elsewhere is taken here without pinning the derivation |
 | `unchecked-arithmetic` | yes | yes | Medium | 0.35 | Bare arithmetic in a release-mode program, where overflow wraps |
-| `removed-guard` | no | yes | High | — | A `constraint = ...` guard is absent. Track 2 only, because the absence of an arbitrary expression is not a structural signal a detector can see |
+| `removed-guard` | yes | yes | High | 0.60 | An account stores a `Pubkey` field, the handler takes an account of that name, and nothing requires them to match |
 
 Track 1 confidences are pinned constants, never computed. The eval harness
 compares runs across time, so a "small improvement" to one silently invalidates
@@ -203,9 +205,9 @@ runs against a frontier model, never for iteration.
   programs, which yield zero handlers. `dike eval holdout --score` can score
   them now, and `runs.json` is still `[]` because the set permits one run and
   spending it is a decision, not a step. Four of the six cases are
-  `removed-guard`, which only Track 2 reports, while the scorer runs Track 1
-  only — so a run today reaches two of the six. The command says so before it
-  scores anything.
+  `removed-guard`, which had no Track 1 detector until 2026-09-19 and now has
+  one, so a Track 1 run reaches the whole set rather than two of six — though
+  what it reaches them *with* is a detector scoring 0.200 on the mutants.
 - **Every finding on real code so far has been a false positive.** Measured
   2026-09-19 over 7,211 LOC of real Anchor programs: 4 findings, 0 true
   positives, adjudicated line by line in

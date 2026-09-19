@@ -200,6 +200,7 @@ fn strip_items(
         let matched: Vec<Range<usize>> = items
             .iter()
             .filter(|i| keys.contains(&i.key.as_str()))
+            .filter(|i| !binding_is_redundant(&text[i.range.clone()], d))
             .map(|i| with_separator(text, i.range.clone()))
             .collect();
         if matched.is_empty() {
@@ -234,6 +235,59 @@ fn strip_items(
         }
     }
     out
+}
+
+/// Whether removing this binding would inject nothing.
+///
+/// A `has_one = X` — or the hand-written `constraint = a.X == X.key()` that
+/// means the same thing — on an account whose own `seeds` already derive from `X` is
+/// not load-bearing: strip it and the account still only derives for that X,
+/// so the mutant compiles, runs, and is exactly as secure as the original.
+/// Scoring an analyzer for failing to report a defect that is not there
+/// deflates recall against ground truth that is simply wrong.
+///
+/// The validity gate answers "does this mutant build?" — a mutant that does
+/// not is a broken program rather than a vulnerable one. This answers the
+/// other half of the same question, and it exists for the same reason.
+///
+/// Found 2026-09-19: the `escrow` fixture joined the corpus and
+/// `missing-authority-binding` recall read 0.800 on a mutant with nothing
+/// wrong with it. Non-`has_one` items return false, so the other operators
+/// that share this walk are unaffected.
+fn binding_is_redundant(item_text: &str, decl: &crate::ir::AccountDecl) -> bool {
+    let compact = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+    let text = compact(item_text);
+
+    // `has_one = maker @ EscrowError::Unauthorized` — the target is what
+    // precedes the optional custom error.
+    let target = if let Some(rest) = text.strip_prefix("has_one=") {
+        rest.split('@').next().unwrap_or("").trim_end_matches(',').to_string()
+    } else if let Some(rest) = text.strip_prefix("constraint=") {
+        // The same binding written by hand: `deal.maker == maker.key()`.
+        // Only that shape is considered — a constraint comparing anything
+        // else is not a binding the seeds could be making instead.
+        let Some((left, right)) = rest.split('@').next().unwrap_or("").split_once("==") else {
+            return false;
+        };
+        let counterpart = right.trim_end_matches(',').strip_suffix(".key()").unwrap_or("");
+        match left.split_once('.') {
+            Some((_, field)) if field == counterpart && !counterpart.is_empty() => {
+                counterpart.to_string()
+            }
+            _ => return false,
+        }
+    } else {
+        return false;
+    };
+
+    if target.is_empty() {
+        return false;
+    }
+    let needle = format!("{target}.key()");
+    decl.constraints.iter().any(|c| match c {
+        crate::ir::Constraint::Seeds(seeds) => compact(seeds).contains(&needle),
+        _ => false,
+    })
 }
 
 /// Deletes a `has_one = X` binding.
@@ -602,6 +656,126 @@ pub struct G<'info> {
                 "the CHECK doc must sit on the field it documents:\n{text}"
             );
         }
+    }
+
+    /// Found 2026-09-19, when the `escrow` fixture joined the mutation corpus
+    /// and `missing-authority-binding` recall read 0.800 with nothing wrong
+    /// with the analyzer.
+    ///
+    /// Removing `has_one = maker` from an account whose own seeds already
+    /// derive from `maker` injects no defect: the PDA still only derives for
+    /// that maker, and the maker signs. The mutant compiles and is still
+    /// secure, so scoring the analyzer for not reporting it deflates recall
+    /// against ground truth that is simply wrong.
+    ///
+    /// The validity gate answers "does this mutant build?". This is the other
+    /// half of the same question.
+    #[test]
+    fn strip_has_one_skips_a_binding_the_accounts_own_seeds_already_make() {
+        let src = r#"
+            #[program]
+            pub mod escrow {
+                pub fn fund(ctx: Context<Fund>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Fund<'info> {
+                #[account(mut)]
+                pub maker: Signer<'info>,
+                #[account(
+                    mut,
+                    has_one = maker @ EscrowError::Unauthorized,
+                    seeds = [b"deal", maker.key().as_ref()],
+                    bump = deal.bump,
+                )]
+                pub deal: Account<'info, Deal>,
+            }
+        "#;
+        let mutants = apply_operator(StripHasOne, src);
+        assert!(mutants.is_empty(), "the mutant would still be secure: {mutants:#?}");
+    }
+
+    /// The same redundancy written by hand. `constraint = deal.maker ==
+    /// maker.key()` is `has_one = maker` spelled out, and it is equally
+    /// redundant when the seeds already derive from `maker`. Only that exact
+    /// shape counts: a constraint comparing anything else is not a binding the
+    /// seeds could be making instead.
+    #[test]
+    fn strip_constraint_skips_a_hand_written_binding_the_seeds_already_make() {
+        let src = r#"
+            #[program]
+            pub mod escrow {
+                pub fn settle(ctx: Context<Settle>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Settle<'info> {
+                pub caller: Signer<'info>,
+                /// CHECK: pinned by the seeds below
+                pub maker: UncheckedAccount<'info>,
+                #[account(
+                    mut,
+                    seeds = [b"deal", maker.key().as_ref()],
+                    bump = deal.bump,
+                    constraint = deal.maker == maker.key() @ EscrowError::Unauthorized,
+                )]
+                pub deal: Account<'info, Deal>,
+            }
+        "#;
+        let mutants = apply_operator(StripConstraint, src);
+        assert!(mutants.is_empty(), "the mutant would still be secure: {mutants:#?}");
+    }
+
+    /// The control for the constraint branch: the same shape where the seeds
+    /// do NOT derive from the counterpart is a real guard and must still be
+    /// removable.
+    #[test]
+    fn strip_constraint_still_mutates_a_binding_the_seeds_do_not_make() {
+        let src = r#"
+            #[program]
+            pub mod escrow {
+                pub fn resolve(ctx: Context<Resolve>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Resolve<'info> {
+                pub resolver: Signer<'info>,
+                #[account(
+                    mut,
+                    seeds = [b"deal"],
+                    bump = deal.bump,
+                    constraint = deal.resolver == resolver.key() @ EscrowError::Unauthorized,
+                )]
+                pub deal: Account<'info, Deal>,
+            }
+        "#;
+        let mutants = apply_operator(StripConstraint, src);
+        assert_eq!(mutants.len(), 1, "a real guard must still be removable");
+        assert!(!mutants[0].files[0].1.contains("constraint"));
+    }
+
+    /// The control. The same `has_one`, on an account whose seeds do NOT
+    /// derive from the target, is load-bearing and must still be mutated.
+    #[test]
+    fn strip_has_one_still_mutates_a_binding_the_seeds_do_not_make() {
+        let src = r#"
+            #[program]
+            pub mod escrow {
+                pub fn settle(ctx: Context<Settle>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Settle<'info> {
+                #[account(mut)]
+                pub admin: Signer<'info>,
+                #[account(
+                    mut,
+                    has_one = admin @ EscrowError::Unauthorized,
+                    seeds = [b"config"],
+                    bump = config.bump,
+                )]
+                pub config: Account<'info, Config>,
+            }
+        "#;
+        let mutants = apply_operator(StripHasOne, src);
+        assert_eq!(mutants.len(), 1, "a real binding must still be removable");
+        assert!(!mutants[0].files[0].1.contains("has_one"));
     }
 
     #[test]

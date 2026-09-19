@@ -2,6 +2,7 @@ pub mod arithmetic;
 pub mod authority;
 pub mod owner;
 pub mod pda;
+pub mod removed_guard;
 pub mod signer;
 pub mod suppression;
 
@@ -36,6 +37,7 @@ pub fn all_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(authority::MissingAuthorityBindingDetector),
         Box::new(pda::PdaValidationGapDetector),
         Box::new(arithmetic::UncheckedArithmeticDetector),
+        Box::new(removed_guard::RemovedGuardDetector),
     ]
 }
 

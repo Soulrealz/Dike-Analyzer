@@ -1,0 +1,25 @@
+# A second mutation source, and the one that poses the questions `vault` cannot.
+#
+# `vault` is a single file in which every account is pinned on its own
+# declaration. Two false-positive classes adjudicated on real code (2026-09-19)
+# were invisible to a harness scored only against it: an account pinned by a
+# *sibling* declaration, and a *staged* authority (`pending_admin`) that is not
+# the live one. Both shapes appear here, written correctly, so the harness now
+# scores against a program where getting them wrong shows up as noise.
+#
+# Multi-file and delegating on purpose too: real programs put one instruction
+# per module and have `lib.rs` forward to it.
+#
+# Buildable for the same reason `vault` is — the mutation-validity gate runs
+# `cargo check` over every mutant. The empty `[workspace]` table detaches it
+# from the repository root so `cargo test` never builds it.
+
+[package]
+name = "escrow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anchor-lang = "0.30"
+
+[workspace]

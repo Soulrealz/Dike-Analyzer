@@ -166,7 +166,7 @@ where Track 2 is losing.
 │   │   │   │   │   ├── ir.rs          The Anchor IR: Program, Handler, AccountsStruct, Constraint…
 │   │   │   ├── parser/        syn-based parsing: accounts, program, symbols, body summary
 │   │   │   ├── chunker/       HandlerUnit chunking + derived retrieval queries
-│   │   │   ├── detectors/     Five static detectors + the suppression pass
+│   │   │   ├── detectors/     Six static detectors + the suppression pass
 │   │   │   ├── llm_analyzer/  Track 2 assembled: chunk, retrieve, ask, validate
 │   │   │   ├── mutations/     The six vulnerability-injection operators (Phase 7)
 │   │   │   └── lib.rs         AnchorAnalyzer, analyze_program
@@ -186,8 +186,12 @@ where Track 2 is losing.
 │       ├── specs/             Approved design docs
 │       └── plans/             Phased implementation plans
 ├── tests/fixtures/programs/   Anchor fixture programs, parsed as text
-│   ├── vault/                 the clean one, and the mutation source. HAS a Cargo.toml:
-│   │                           it is the only fixture the eval harness builds.
+│   ├── vault/                 a clean mutation source. HAS a Cargo.toml: the eval
+│   │                           harness builds every mutant of it.
+│   ├── escrow/                the second clean mutation source, and the one that poses
+│   │                           what vault cannot: multi-file, delegating handlers, an
+│   │                           account pinned by a SIBLING declaration, a staged
+│   │                           authority. Also a buildable crate.
 │   │                           Its `constraint = ...` expressions are the only
 │   │                           `removed-guard` sites that exist — see "Quirks"
 │   └── leaky_vault/           the vulnerable counterpart: both tracks must fire on it.
@@ -618,6 +622,60 @@ real constraint. Ordinary choices need no justification.
   style, so enforcing it would mean a tree-wide reformat that rewrites blame
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
+
+- **`removed-guard` has a Track 1 detector, and its recall is 0.200 because of
+  the mutants, not the detector (2026-09-19).** The class was Track-2-only on
+  the reasoning that "the absence of an arbitrary expression is not a
+  structural signal". That is true of an arbitrary expression and false of the
+  one programs actually write. Surveyed over three real Anchor programs, every
+  `constraint` but two had one shape: `a.field == field.key()` — a stored
+  `Pubkey`, an account of that name, and a requirement that they match. That is
+  `has_one` written by hand, and its absence is structural: the struct declares
+  both halves of a binding and never makes it.
+
+  `RemovedGuardDetector` reports exactly that, for the non-authority fields
+  (`user`, `maker`, `resolver`) that `missing-authority-binding` leaves alone —
+  reporting the authority ones too would put the same defect under two class
+  names. Zero findings on both clean fixtures and all three real programs.
+
+  The remaining four `strip_constraint` mutants are not detector failures, and
+  each is a different reason:
+
+  | mutant | why it is not credited |
+  |---|---|
+  | `vault/deposit`, `vault/withdraw` | the guard is on `TokenAccount.owner`; `TokenAccount` is an `anchor_spl` type with no state struct in the program, so the analyzer has no field list for it |
+  | `vault/close_vault` | `constraint = vault.amount == 0` is a business rule. Nothing structural says a vault must be empty before closing, and no detector can infer it |
+  | `escrow/accept_admin` | detected, on the right handler, and reported as `missing-authority-binding` — a more precise name than the operator's label. The harness credits by class, so it counts for neither |
+
+  Raising this number means teaching the analyzer about external account types,
+  not writing more rules.
+
+- **A mutant that is still secure is not a vulnerable program either.**
+  `strip_has_one` removed a `has_one = X` from accounts whose own `seeds`
+  already derive from `X`. Stripping it injects nothing: the PDA still only
+  derives for that X, and X signs. The mutant compiles, so the validity gate
+  passes it, and the harness then scores the analyzer for failing to report a
+  defect that is not there.
+
+  Found 2026-09-19, the hour `escrow` joined the corpus:
+  `missing-authority-binding` recall read **0.800** with nothing wrong with the
+  analyzer. `has_one_is_redundant` now skips those sites and it reads 1.000
+  again over a larger case set. The validity gate answers "does this mutant
+  build?"; this answers the other half of the same question, and exists for the
+  same reason.
+
+- **The mutation corpus is two programs, because one could not pose the
+  question.** `vault` is a single file in which every account is pinned on its
+  own declaration, so a harness scored against it alone was blind to both
+  false-positive classes adjudicated on real code — and scored 1.000 on every
+  class while the tool was wrong about every real finding. `escrow` is
+  multi-file with delegating handlers, pins an account from a sibling
+  declaration, and stages an authority. Reverting either detector fix turns it
+  from clean into three findings, one per adjudicated shape; that was verified
+  by reverting them, not assumed. Pinned by
+  `end_to_end::the_escrow_fixture_is_clean`.
+
+  Case counts went 19 → 32 and the noise-floor denominator 166 → 417 LOC.
 
 - **Precision on real programs is 0.000 (0/4), measured 2026-09-19.** Every
   Track 1 finding on all 7,211 LOC of real Anchor code available was read at the

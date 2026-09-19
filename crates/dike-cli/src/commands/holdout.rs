@@ -583,20 +583,25 @@ mod tests {
         assert!(!runs.exists(), "an unscored run was recorded and spent the one pass");
     }
 
-    /// The one run must not be spent discovering that most of the set was
-    /// unreachable by construction. Four of the six populated cases are
-    /// `removed-guard`, which is Track-2-only by design.
+    /// The one run must not be spent discovering that part of the set was
+    /// unreachable by construction:
+    ///
+    /// Every class in the tool's own vocabulary has had a Track 1 detector
+    /// since `removed-guard` gained one on 2026-09-19, so the warning no
+    /// longer fires on the real holdout. What it still has to catch is a case
+    /// labelled with a class no detector reports, which can only ever score
+    /// as a miss whatever the code says.
     #[test]
     fn a_class_no_detector_reports_is_called_out_before_the_run_is_spent() {
         let mut reachable = case("a", "programs/x/src/lib.rs");
         reachable.class = "missing-signer".into();
         let mut unreachable = case("b", "programs/x/src/lib.rs");
-        unreachable.class = "removed-guard".into();
+        unreachable.class = "oracle-staleness".into();
 
         assert_eq!(unreachable_class_warning(&[reachable.clone()]), None);
         let warning = unreachable_class_warning(&[reachable, unreachable]).expect("warned");
         assert!(warning.contains("1 of 2"), "{warning}");
-        assert!(warning.contains("removed-guard"), "{warning}");
+        assert!(warning.contains("oracle-staleness"), "{warning}");
     }
 
     /// Listing must not touch `runs.json` at all. `dike eval holdout` with no
