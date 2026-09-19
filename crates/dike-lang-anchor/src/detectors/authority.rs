@@ -57,6 +57,7 @@ impl Detector for MissingAuthorityBindingDetector {
                     .filter(|field| {
                         !has_one_targets.iter().any(|t| t == field)
                             && !raw_texts.iter().any(|text| raw_pins_field(text, field))
+                            && !field_pinned_by_sibling(accounts, &d.name, field)
                             // The handler must actually claim this authority.
                             // Measured 2026-09-06 over 28k LOC of real
                             // programs: without this, 101 of 119 findings were
@@ -122,11 +123,38 @@ fn claims_authority(decl: &str, field: &str) -> bool {
     if decl == field {
         return true;
     }
+    // A staged authority and a live one share a role word and are not the
+    // same authority. `admin` and `pending_admin` differ by exactly the word
+    // that says one of them is not in force yet, so the role match below
+    // reads them as one and concludes that declaring `admin` claims
+    // `pending_admin`. Measured 2026-09-19, that was a false positive across
+    // eight handlers of one real program (`benchmarks/adjudication/`), each
+    // correctly gated on `admin` and each reported for not binding a field
+    // that is not their authority.
+    //
+    // The test is on disagreement, not on the staging word itself, so it cuts
+    // both ways: `new_admin` does not claim `admin` either — a handler that
+    // takes the key it is about to store is not thereby acting as the current
+    // authority — while `new_admin` claiming `pending_admin` still counts,
+    // which is the shape a two-step transfer's accept step actually has.
+    if is_staged(decl) != is_staged(field) {
+        return false;
+    }
     let role = |n: &str| {
         let lower = n.to_ascii_lowercase();
         CLAIMING_ROLES.iter().any(|r| lower.split('_').any(|seg| seg == *r))
     };
     role(decl) && role(field)
+}
+
+/// Words that mark an authority as staged: a key recorded now so that it can
+/// become the authority later, or the replacement a handler is writing.
+const STAGING_QUALIFIERS: [&str; 6] =
+    ["pending", "proposed", "next", "new", "incoming", "candidate"];
+
+fn is_staged(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.split('_').any(|seg| STAGING_QUALIFIERS.contains(&seg))
 }
 
 /// A `Raw` constraint only counts as binding `field` when its text both
@@ -153,6 +181,38 @@ fn claims_authority(decl: &str, field: &str) -> bool {
 fn raw_pins_field(text: &str, field: &str) -> bool {
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     compact.contains(field) && (compact.contains(".key()") || compact.contains("=="))
+}
+
+/// Whether another declaration in the same accounts struct is pinned to
+/// `owner.field`, which binds the authority just as a `has_one` would.
+///
+/// Anchor accepts the binding written from either end. `has_one = admin` on
+/// the config says "the admin account must equal `config.admin`";
+/// `address = config.admin` on the signer says the same thing from the other
+/// side, and `constraint = admin.key() == config.admin` is a third spelling.
+/// Reading only the config declaration sees one of the three — measured
+/// 2026-09-19, that was a false positive on real code
+/// (`benchmarks/adjudication/`), where the signer carried
+/// `address = config.admin @ Error::Unauthorized`.
+///
+/// The needle is the qualified `owner.field`, never the bare field name: a
+/// sibling mentioning some other `admin` must not silence this.
+///
+/// `Seeds` is deliberately not consulted. Deriving a PDA from `config.admin`
+/// pins that address to the stored value; it does not establish that the
+/// caller *is* the admin, which is the claim this detector makes.
+fn field_pinned_by_sibling(accounts: &AccountsStruct, owner: &str, field: &str) -> bool {
+    let needle = format!("{owner}.{field}");
+    accounts.decls.iter().any(|other| {
+        other.name != owner
+            && other.constraints.iter().any(|c| match c {
+                Constraint::Address(text) | Constraint::Raw(text) => {
+                    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+                    compact.contains(&needle)
+                }
+                _ => false,
+            })
+    })
 }
 
 /// Resolve the state struct behind `decl`'s wrapper and return the names of
@@ -196,6 +256,166 @@ mod tests {
                 d.run(&out.program, h, &accounts)
             })
             .collect()
+    }
+
+    /// Adjudicated false positive, polyclone `CollectProfits` and seven
+    /// siblings (2026-09-19). `Config` stores both `admin` and
+    /// `pending_admin`, the staged half of a two-step admin transfer.
+    /// `pending_admin` is bound in the one handler where it is the authority
+    /// (`accept_admin`) and is deliberately inert in the other eight, which
+    /// are gated by `admin` — correctly, and the detector sees that.
+    ///
+    /// It flagged `pending_admin` anyway, because the role match reads
+    /// `admin` and `pending_admin` as the same role and so treated declaring
+    /// `admin` as claiming the staged field. A staged authority is not the
+    /// live one.
+    #[test]
+    fn declaring_the_live_authority_does_not_claim_the_staged_one() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn set_paused(ctx: Context<SetPaused>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey, pub pending_admin: Pubkey }
+            #[derive(Accounts)]
+            pub struct SetPaused<'info> {
+                pub admin: Signer<'info>,
+                #[account(
+                    mut,
+                    seeds = [CONFIG_SEED],
+                    bump = config.bump,
+                    constraint = config.admin == admin.key() @ Error::Unauthorized,
+                )]
+                pub config: Account<'info, Config>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "`pending_admin` is not this handler's authority: {f:#?}");
+    }
+
+    /// The mirror: declaring the account that will *become* the authority is
+    /// not claiming the current one either. A `set_admin` handler takes
+    /// `new_admin` as the value to store, and the authority it must bind is
+    /// `admin`.
+    #[test]
+    fn declaring_a_replacement_does_not_claim_the_live_authority() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn nominate(ctx: Context<Nominate>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey }
+            #[derive(Accounts)]
+            pub struct Nominate<'info> {
+                /// CHECK: the key being nominated, stored not authenticated
+                pub new_admin: UncheckedAccount<'info>,
+                #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+                pub config: Account<'info, Config>,
+                pub payer: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "`new_admin` does not claim `admin`: {f:#?}");
+    }
+
+    /// Recall control. A handler that declares the staged authority itself
+    /// and binds nothing is exactly the defect: it acts as `pending_admin`
+    /// without checking the caller is `pending_admin`.
+    #[test]
+    fn a_handler_that_claims_the_staged_authority_unbound_is_still_reported() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn accept(ctx: Context<Accept>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey, pub pending_admin: Pubkey }
+            #[derive(Accounts)]
+            pub struct Accept<'info> {
+                pub pending_admin: Signer<'info>,
+                #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+                pub config: Account<'info, Config>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert!(f[0].evidence.contains("pending_admin"), "{}", f[0].evidence);
+    }
+
+    /// Adjudicated false positive, prediction-market `CreateMarket`
+    /// (2026-09-19). The caller *is* bound to `config.admin` — by an
+    /// `address =` on the signer rather than a `has_one` on the config. Anchor
+    /// treats the two as equivalent; a rule that only reads the config
+    /// declaration sees only one of them.
+    #[test]
+    fn a_sibling_pinned_to_the_field_by_address_binds_the_authority() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn create_market(ctx: Context<CreateMarket>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey, pub market_count: u64 }
+            #[derive(Accounts)]
+            pub struct CreateMarket<'info> {
+                #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+                pub config: Account<'info, Config>,
+                #[account(mut, address = config.admin @ Error::Unauthorized)]
+                pub admin: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "`admin` is pinned to `config.admin` by address: {f:#?}");
+    }
+
+    /// The same binding written the other common way: a `constraint` on the
+    /// signer rather than on the account that stores the field.
+    #[test]
+    fn a_sibling_constraint_naming_the_field_binds_the_authority() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn sweep(ctx: Context<Sweep>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey }
+            #[derive(Accounts)]
+            pub struct Sweep<'info> {
+                #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+                pub config: Account<'info, Config>,
+                #[account(mut, constraint = admin.key() == config.admin @ Error::Unauthorized)]
+                pub admin: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "`admin` is bound by its own constraint: {f:#?}");
+    }
+
+    /// The control. Nothing anywhere in the struct binds the signer to
+    /// `config.admin`, so this is the defect the detector exists for and it
+    /// must survive the fix above.
+    #[test]
+    fn an_authority_nothing_in_the_struct_binds_is_still_reported() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn sweep(ctx: Context<Sweep>) -> Result<()> { Ok(()) }
+            }
+            #[account]
+            pub struct Config { pub admin: Pubkey }
+            #[derive(Accounts)]
+            pub struct Sweep<'info> {
+                #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+                pub config: Account<'info, Config>,
+                #[account(mut)]
+                pub admin: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert_eq!(f[0].class.as_str(), "missing-authority-binding");
     }
 
     const BASE: &str = r#"

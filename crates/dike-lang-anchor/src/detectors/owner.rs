@@ -28,6 +28,7 @@ impl Detector for MissingOwnerCheckDetector {
                         Constraint::Raw(text) => raw_is_identity_pinning(text),
                         _ => false,
                     })
+                    && !pinned_by_sibling(accounts, &d.name)
             })
             .map(|d| {
                 finding_from(
@@ -66,8 +67,46 @@ impl Detector for MissingOwnerCheckDetector {
 /// while dropping a family of false suppressions — strictly more
 /// recall-favorable, which is the right bias here.
 fn raw_is_identity_pinning(text: &str) -> bool {
-    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    compact.contains(".key()")
+    compact(text).contains(".key()")
+}
+
+/// Anchor's proc-macro2 stringification inserts spaces around dots and before
+/// an empty `()` group (`vault . admin == admin . key ()`), so every substring
+/// check here strips whitespace first rather than being fragile to it.
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Whether another declaration in the same accounts struct pins `name`.
+///
+/// Anchor lets one account constrain another. An `UncheckedAccount` named in a
+/// sibling's `seeds` is fixed by that derivation: pass a different account and
+/// the sibling's address no longer derives, so the sibling fails to load. A
+/// sibling `constraint = other.field == name.key()` pins it against data
+/// already stored on chain. Both are idiomatic, and both are invisible to a
+/// rule that reads one declaration at a time — measured 2026-09-19, this was
+/// three of the four false positives in the project's first adjudication of
+/// real-program output (`benchmarks/adjudication/`).
+///
+/// An `init` sibling is excluded deliberately. It is created at whatever
+/// address its seeds derive to, so naming the unchecked account there
+/// constrains nothing: the caller picks the account and the PDA follows.
+/// `init_if_needed` goes with it — its pin holds only in the branch where the
+/// account already exists, and a conditional pin is not one. This is the
+/// recall-favorable side of the call, which is the right side for a check that
+/// deletes findings.
+fn pinned_by_sibling(accounts: &AccountsStruct, name: &str) -> bool {
+    let needle = format!("{name}.key()");
+    accounts.decls.iter().any(|other| {
+        other.name != name
+            && !other.is_init()
+            && other.constraints.iter().any(|c| match c {
+                Constraint::Seeds(text) | Constraint::Raw(text) | Constraint::Address(text) => {
+                    compact(text).contains(&needle)
+                }
+                _ => false,
+            })
+    })
 }
 
 #[cfg(test)]
@@ -93,6 +132,122 @@ mod tests {
                 d.run(&out.program, h, &accounts)
             })
             .collect()
+    }
+
+    /// Adjudicated false positive, polyclone `Refund` (2026-09-19). `user` is
+    /// an `UncheckedAccount` whose identity is pinned by two *siblings*: it
+    /// appears in the seeds of `position` and `user_balance`, and
+    /// `position.user == user.key()` names it directly. Passing a different
+    /// `user` derives a different `position`, which will not exist or will
+    /// belong to that other user.
+    ///
+    /// Anchor lets one declaration pin another. A rule that reads a single
+    /// declaration cannot see it.
+    const PINNED_BY_SIBLING_SEEDS: &str = r#"
+        #[program]
+        pub mod market {
+            pub fn refund(ctx: Context<Refund>) -> Result<()> { Ok(()) }
+        }
+        #[derive(Accounts)]
+        pub struct Refund<'info> {
+            #[account(mut)]
+            pub caller: Signer<'info>,
+            /// CHECK: used only for PDA derivation
+            pub user: UncheckedAccount<'info>,
+            #[account(
+                mut,
+                seeds = [POSITION_SEED, market.key().as_ref(), user.key().as_ref()],
+                bump = position.bump,
+                constraint = position.user == user.key() @ Error::Unauthorized,
+            )]
+            pub position: Account<'info, Position>,
+            #[account(seeds = [USER_SEED, user.key().as_ref()], bump = user_balance.bump)]
+            pub user_balance: Account<'info, UserBalance>,
+        }
+    "#;
+
+    #[test]
+    fn an_unchecked_account_named_in_a_siblings_seeds_is_pinned() {
+        let f = findings_for(PINNED_BY_SIBLING_SEEDS);
+        assert!(f.is_empty(), "`user` is pinned by position/user_balance seeds: {f:#?}");
+    }
+
+    /// Adjudicated false positive, prediction-market `PlaceBet` (2026-09-19).
+    /// Same shape, and the direct pin is a sibling's `constraint`.
+    #[test]
+    fn an_unchecked_account_named_in_a_siblings_constraint_is_pinned() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn place_bet(ctx: Context<PlaceBet>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct PlaceBet<'info> {
+                #[account(
+                    mut,
+                    seeds = [USER_SEED, bettor.key().as_ref()],
+                    bump = user_balance.bump,
+                    constraint = user_balance.owner == bettor.key() @ Error::Unauthorized,
+                )]
+                pub user_balance: Account<'info, UserBalance>,
+                /// CHECK: authorized by an Ed25519-signed intent
+                pub bettor: UncheckedAccount<'info>,
+                #[account(mut)]
+                pub relayer: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "`bettor` is pinned by user_balance: {f:#?}");
+    }
+
+    /// The pin must come from an account that itself has a fixed address. An
+    /// `init` sibling is created at whatever address its seeds derive to, so
+    /// naming the unchecked account in *its* seeds constrains nothing — the
+    /// caller picks the account and the PDA follows. Suppressing on that
+    /// would be a false negative in the dangerous direction.
+    #[test]
+    fn a_pin_from_an_init_sibling_does_not_count() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn open(ctx: Context<Open>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Open<'info> {
+                pub beneficiary: UncheckedAccount<'info>,
+                #[account(
+                    init, payer = payer, space = 64,
+                    seeds = [POSITION_SEED, beneficiary.key().as_ref()], bump
+                )]
+                pub position: Account<'info, Position>,
+                #[account(mut)]
+                pub payer: Signer<'info>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert_eq!(f.len(), 1, "an init sibling pins nothing: {f:#?}");
+        assert_eq!(f[0].class.as_str(), "missing-owner-check");
+    }
+
+    /// The control: an unchecked account no sibling mentions is still a
+    /// finding. Without this the fix above could silence the detector wholly.
+    #[test]
+    fn an_unchecked_account_no_sibling_mentions_is_still_reported() {
+        let src = r#"
+            #[program]
+            pub mod market {
+                pub fn sweep(ctx: Context<Sweep>) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct Sweep<'info> {
+                pub destination: UncheckedAccount<'info>,
+                #[account(seeds = [VAULT_SEED], bump = vault.bump)]
+                pub vault: Account<'info, Vault>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert!(f[0].evidence.contains("`destination`"));
     }
 
     const VULNERABLE: &str = r#"

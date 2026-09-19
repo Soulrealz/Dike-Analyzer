@@ -129,6 +129,9 @@ where Track 2 is losing.
 ├── benchmarks/
 │   ├── history.json           The eval series: one EvalSummary per run. COMMITTED —
 │   │                           the harness exists to compare runs over time
+│   ├── adjudication/          Findings on real programs, read at the source and
+│   │                           labelled by hand. The only precision number that is
+│   │                           not measured against defects we injected ourselves
 │   └── holdout/               The real holdout: cases.toml (six cases) + runs.json.
 │                               checkouts/ is GITIGNORED — other people's repos at
 │                               other people's commits, never redistributed here
@@ -615,6 +618,51 @@ real constraint. Ordinary choices need no justification.
   style, so enforcing it would mean a tree-wide reformat that rewrites blame
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
+
+- **Precision on real programs is 0.000 (0/4), measured 2026-09-19.** Every
+  Track 1 finding on all 7,211 LOC of real Anchor code available was read at the
+  source and labelled: four findings, four false positives. Full adjudication in
+  `benchmarks/adjudication/2026-09-19-real-programs.md`.
+
+  Two causes, both narrow. **Three of four: the pin lives on a sibling
+  declaration.** Detectors judge one `AccountDecl` in isolation and ask whether
+  *it* carries `address`, `owner`, `seeds`, `has_one` or a naming `constraint`.
+  Anchor lets you pin account X from account Y — X named in Y's `seeds`,
+  `constraint = Y.field == X.key()`, or `address = Y.field` placed on X — and
+  all three are idiomatic. The suppression pass already handles the imperative
+  form of this in the handler body; the declarative form inside
+  `#[derive(Accounts)]` has no equivalent. **One of four: a staged authority is
+  not a live one.** `pending_admin` in a two-step admin transfer is bound in the
+  single handler where it is the authority and inert in the other eight.
+
+  Neither needed dataflow, and **both were fixed the same day.** Cause A:
+  `pinned_by_sibling` in `owner.rs` and `field_pinned_by_sibling` in
+  `authority.rs`. Cause B: `claims_authority` now treats a staged authority and
+  a live one as different authorities, returning false when exactly one of the
+  two names carries a staging qualifier — the test is on disagreement, so
+  `new_admin` does not claim `admin` while `new_admin` claiming `pending_admin`
+  still counts.
+
+  Findings on the same population went 4 → 1 → **0**, with every eval class
+  still at 1.000, the noise floor still 0, and `leaky_vault` still yielding all
+  8 of its findings. Precision is no longer 0.000; it is **undefined**, on a
+  denominator of zero. Nothing distinguishes "these programs have no defect of
+  these classes" from "the detectors cannot see theirs" — the holdout is that
+  instrument and it is unspent. Recall on real
+  code stays unmeasured — the holdout is that instrument, and it is unspent.
+
+  The low volume and the zero precision are not in tension: the detectors are
+  conservative, and the conservatism is measured against the wrong unit — one
+  declaration rather than one accounts struct.
+
+- **A finding's `file:line` does not point at the finding, on any program whose
+  handlers delegate.** `Location::file` is the handler's file, so in a
+  module-per-instruction layout it is `lib.rs` for everything, while
+  `Location::line` comes from the declaration in a different file. Measured on
+  polyclone: a finding reported at `src/lib.rs:13` (`pub use message::*;`) whose
+  declaration is at `src/instructions/refund.rs:13`. Every finding in the
+  2026-09-19 adjudication had to be located by hand. The file half of the pair
+  is the wrong one to keep.
 
 - **The differential harness compared findings across tracks, so one track's
   false positive erased the other's detection (found 2026-09-15).** `diff_runs`

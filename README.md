@@ -206,6 +206,18 @@ runs against a frontier model, never for iteration.
   `removed-guard`, which only Track 2 reports, while the scorer runs Track 1
   only — so a run today reaches two of the six. The command says so before it
   scores anything.
+- **Every finding on real code so far has been a false positive.** Measured
+  2026-09-19 over 7,211 LOC of real Anchor programs: 4 findings, 0 true
+  positives, adjudicated line by line in
+  `benchmarks/adjudication/2026-09-19-real-programs.md`. Three of the four came
+  from judging each account declaration in isolation when Anchor lets a sibling
+  declaration do the pinning, and the fourth from reading a staged authority
+  (`pending_admin`) as the live one. Both causes are fixed and the same
+  population now yields zero findings, so precision is undefined rather than
+  zero — better than four wrong answers, and not yet a right one. The eval
+  harness could not see either error, because its mutants go into a single-file
+  fixture where the pin and the account are always in the same place, which is
+  the argument for scoring against more than one program.
 - **Track 2 detects, but it is noisy and thin.** It scored 0.000 on every class
   until 2026-09-15, when the cause turned out to be the response schema rather
   than the model: a root-level JSON array can be satisfied by `[]`, which is the
