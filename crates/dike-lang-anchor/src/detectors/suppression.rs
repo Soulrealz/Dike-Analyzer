@@ -63,6 +63,23 @@ fn subject_account(finding: &Finding, accounts: &AccountsStruct) -> Option<Strin
 /// absent (the match starts at position 0) or NOT in `[A-Za-z0-9_]` — the
 /// same boundary an identifier lexer would enforce, without needing to
 /// re-tokenize the whole string.
+/// `contains_anchored`, plus a right-hand boundary: the needle must not be the
+/// prefix of a longer identifier.
+///
+/// `contains_anchored` checks only the character *before* a match, which is
+/// enough for needles ending in `()` or `.`. A needle ending in a bare field
+/// name needs the other side too — `accounts.x.key` would otherwise match
+/// inside `accounts.x.keypair`, and suppression is the one place in this
+/// crate where the recall/precision bias reverses (CLAUDE.md Rule 3).
+fn contains_anchored_bounded(haystack: &str, needle: &str) -> bool {
+    anchored_occurrences(haystack, needle).into_iter().any(|start| {
+        match haystack[start + needle.len()..].chars().next() {
+            None => true,
+            Some(next) => !(next.is_ascii_alphanumeric() || next == '_'),
+        }
+    })
+}
+
 fn contains_anchored(haystack: &str, needle: &str) -> bool {
     !anchored_occurrences(haystack, needle).is_empty()
 }
@@ -451,6 +468,23 @@ pub fn apply(
                     if class == MISSING_OWNER_CHECK {
                         let owner_needle = format!("accounts.{}.owner", name);
                         if contains_anchored(&compact, &owner_needle) {
+                            return true;
+                        }
+                        // `.key` is a FIELD on `AccountInfo`; `.key()` is the
+                        // method a typed account carries. The needle below
+                        // matched only the method — and a bare `AccountInfo`
+                        // is the only shape this class fires on, so the field
+                        // is the spelling that matters most here. Measured
+                        // 2026-09-19: `sealevel-attacks/5-arbitrary-cpi/secure`
+                        // fixes its whole category with
+                        // `&spl_token::ID != ctx.accounts.token_program.key`,
+                        // and dike reported it identically to `insecure`.
+                        //
+                        // Bounded on both sides, unlike the needles above: a
+                        // bare field name would otherwise match the prefix of
+                        // a longer one (`.key` inside `.keypair`).
+                        let key_field_needle = format!("accounts.{}.key", name);
+                        if contains_anchored_bounded(&compact, &key_field_needle) {
                             return true;
                         }
                     }
@@ -1360,6 +1394,77 @@ mod tests {
             Some("vault"),
             "subject_account must return the finding's real subject (vault), not the first \
              declared account whose name happens to appear in the evidence (admin)"
+        );
+    }
+
+    /// A `.key` FIELD comparison, which is how identity is pinned on a bare
+    /// `AccountInfo` — and a bare `AccountInfo` is the only shape
+    /// `missing-owner-check` fires on, so this is the spelling that matters
+    /// most for that class. The recognizer looked only for the `.key()`
+    /// METHOD and missed it (found 2026-09-19 against
+    /// `sealevel-attacks/5-arbitrary-cpi/secure`, whose whole fix is this
+    /// line).
+    const KEY_FIELD_GUARD: &str = r#"
+        #[program]
+        pub mod cpi {
+            pub fn cpi(ctx: Context<Cpi>, amount: u64) -> ProgramResult {
+                if &spl_token::ID != ctx.accounts.token_program.key {
+                    return Err(ProgramError::IncorrectProgramId);
+                }
+                Ok(())
+            }
+        }
+        #[derive(Accounts)]
+        pub struct Cpi<'info> {
+            pub token_program: AccountInfo<'info>,
+        }
+    "#;
+
+    #[test]
+    fn a_key_field_comparison_pins_an_account_infos_identity() {
+        let (kept, suppressed) = findings_and_suppressions_for(KEY_FIELD_GUARD);
+        assert!(
+            !kept.iter().any(|f| f.class.as_str() == MISSING_OWNER_CHECK
+                && f.subject.as_deref() == Some("token_program")),
+            "kept: {kept:#?}"
+        );
+        assert!(
+            suppressed.iter().any(|s| s.finding.class.as_str() == MISSING_OWNER_CHECK),
+            "nothing was suppressed"
+        );
+    }
+
+    #[test]
+    fn a_longer_field_beginning_with_key_does_not_pin() {
+        // `.key` must not match as a prefix of `.keypair`, or the needle
+        // suppresses on a field that says nothing about identity. This is the
+        // right-hand boundary `contains_anchored` does not check on its own.
+        let src = KEY_FIELD_GUARD.replace("token_program.key", "token_program.keypair");
+        let (kept, _) = findings_and_suppressions_for(&src);
+        assert!(
+            kept.iter().any(|f| f.class.as_str() == MISSING_OWNER_CHECK
+                && f.subject.as_deref() == Some("token_program")),
+            "suppressed on a `.keypair` field: {kept:#?}"
+        );
+    }
+
+    #[test]
+    fn an_unqualified_key_field_does_not_pin() {
+        // Same reasoning the `accounts.<name>.owner` needle already records:
+        // a bare `x.key` is as often a field of a deserialized struct that
+        // happens to share the account's name, and matching it would delete a
+        // true positive.
+        // The local shares the account's NAME, so the needle must be the one
+        // qualified with `accounts.` to tell them apart. Replacing the whole
+        // `ctx.accounts.` prefix (rather than the identifier) is the point:
+        // a fixture that also renames the account would pass against an
+        // unqualified needle too, and prove nothing.
+        let src = KEY_FIELD_GUARD.replace("ctx.accounts.token_program.key", "token_program.key");
+        let (kept, _) = findings_and_suppressions_for(&src);
+        assert!(
+            kept.iter().any(|f| f.class.as_str() == MISSING_OWNER_CHECK
+                && f.subject.as_deref() == Some("token_program")),
+            "suppressed on an unqualified `.key`: {kept:#?}"
         );
     }
 }

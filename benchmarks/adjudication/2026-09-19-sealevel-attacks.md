@@ -26,14 +26,14 @@ rule firing on something both versions share. What counts is telling them apart.
 | 2 | owner-checks | 1 | 0 | 0 | **discriminates** |
 | 3 | type-cosplay | 0 | 0 | 0 | no detector for the class |
 | 4 | initialization | 1 | 1 | 0 | correct: `secure` still has no owner check |
-| 5 | arbitrary-cpi | 5 | 5 | 0 | no detector for the class; the 5 are noise |
+| 5 | arbitrary-cpi | 5 | 4 | 0 | **discriminates** (since 2026-09-19; see below) |
 | 6 | duplicate-mutable-accounts | 0 | 0 | 0 | no detector for the class |
 | 7 | bump-seed-canonicalization | 1 | 0 | 0 | **discriminates** (since 2026-09-19; see below) |
 | 8 | pda-sharing | 0 | 0 | 0 | not statically separable — see below |
 | 9 | closing-accounts | 1 | 2 | 1 | no detector for the class; noise |
 | 10 | sysvar-address-checking | 1 | 0 | 0 | **discriminates** |
 
-Dike tells the vulnerable version from the fixed one in **4 of 11** categories,
+Dike tells the vulnerable version from the fixed one in **5 of 11** categories,
 and every `recommended` variant is clean, because `recommended` uses Anchor's
 typed constraints (`Signer<'info>`, `Account<'info, T>`, `has_one`) which the
 analyzer understands well.
@@ -189,3 +189,63 @@ invitation, so the next reader does not re-derive it. The `recommended`
 variant is reachable today by different means — it pins the pool with
 `seeds = [withdraw_destination.key().as_ref()]`, which is an Anchor constraint
 the parser already sees.
+
+## Addendum, 2026-09-19 — category 5 discriminates after all
+
+Recorded above as five findings on both variants, "no detector for the class;
+the 5 are noise". The second half was wrong, and the reason is worth keeping.
+
+The five are `missing-signer` on `authority` plus `missing-owner-check` on
+`authority`, `source`, `destination` and `token_program` — four bare
+`AccountInfo`s with no constraints at all. They are not noise in the sense of
+being false: nothing in the program pins any of them. They were undiscriminating
+because the `secure` variant's fix was invisible to the analyzer.
+
+That fix is one line:
+
+```rust
+if &spl_token::ID != ctx.accounts.token_program.key {
+    return Err(ProgramError::IncorrectProgramId);
+}
+```
+
+`parser/body.rs` recorded it correctly as a `ManualIf` check referencing
+`token_program`. The suppression pass ignored it because it looked for
+`<name>.key()` — the **method** a typed account carries — and this is `.key`,
+the **field** on `AccountInfo`. Since a bare `AccountInfo` is the only shape
+`missing-owner-check` fires on, the recognizer was missing the one spelling
+that mattered for the class it governs.
+
+`suppression.rs` now also recognises `accounts.<name>.key`, bounded on both
+sides. `insecure` keeps all five; `secure` drops `token_program` and reports
+four. The category discriminates.
+
+### What was tried first, and why it was abandoned
+
+The obvious reading — "an `AccountInfo` used only as a CPI argument is
+validated by the callee, so don't owner-check it" — does not survive contact
+with the fixtures. `tests/fixtures/programs/leaky_vault` forwards its
+`authority` to a CPI in exactly the same way:
+
+```rust
+let cpi_accounts = Transfer { authority: ctx.accounts.authority.to_account_info(), .. };
+let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+```
+
+and that finding is one of the seven the fixture exists to produce. The only
+difference from category 5 is that `leaky_vault` builds the accounts struct
+into a local first while category 5 inlines it into `invoke(...)`. A rule
+keyed on "appears in a CPI call's arguments" therefore suppresses one and not
+the other **purely by code shape** — and resolving the local through the
+parser's alias map, which is the correct implementation, suppresses both and
+drops the fixture below seven findings.
+
+The premise was simply false: being forwarded to a CPI is not evidence that an
+account needs no owner check. Recorded here so the next reader does not spend
+the same afternoon on it.
+
+### Categories 3, 6 and 9 remain
+
+Still no detector for `type-cosplay`, `duplicate-mutable-accounts` or
+`closing-accounts`, and category 9's three findings across its variants are
+genuinely unrelated to what that category tests.

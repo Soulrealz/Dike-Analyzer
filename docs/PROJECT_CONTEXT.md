@@ -676,7 +676,21 @@ real constraint. Ordinary choices need no justification.
   program genuinely still lacks an owner check, so the bare form would have
   deleted a true positive.
 
-  Dike now discriminates in 3 of 11 categories. Full scorecard and the honest
+  **A third spelling was missing for the same reason, found the same day:**
+  suppression accepted `X.key()`, the *method* a typed account carries, but not
+  `X.key`, the *field* on `AccountInfo` — and a bare `AccountInfo` is the only
+  shape `missing-owner-check` fires on, so the recognizer was blind to the one
+  form that matters most for the class it governs. `5-arbitrary-cpi/secure`
+  fixes its whole category with
+  `if &spl_token::ID != ctx.accounts.token_program.key`, and dike reported it
+  identically to `insecure` until `accounts.X.key` was added. That needle is
+  bounded on *both* sides, unlike the others: a bare field name would otherwise
+  match the prefix of a longer one (`.key` inside `.keypair`).
+
+  Category 7 (`bump-seed-canonicalization`) closed separately, in
+  `detectors/pda.rs` rather than in suppression — see the scorecard addendum.
+
+  Dike now discriminates in 5 of 11 categories. Full scorecard and the honest
   gaps in `benchmarks/adjudication/2026-09-19-sealevel-attacks.md`. **Track 2
   must never be scored against this set**: `corpus/cache/` holds its prose, so
   the retriever would hand the model the answer key.
