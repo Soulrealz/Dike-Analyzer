@@ -176,6 +176,19 @@ silently inherit a set of alerts whose identities all changed at once.
 `security-severity` is a string, not a number — GitHub requires a string here
 and silently ignores a numeric value.
 
+`dikeConfidence` is **not** emitted with `json!(finding.confidence)`. That
+widens the `f32` to `f64` before anything formats it, and a confidence of
+`0.9` renders as `0.8999999761581421` while the JSON report renders the same
+field as `0.9` (measured 2026-09-19). The renderer round-trips through the
+`f32`'s own shortest representation so both reports quote the same number.
+
+### A class with no catalog entry
+
+Track 2 can report a class the catalog does not carry. The result is still
+emitted, with a `ruleId` and **no** `ruleIndex` — SARIF permits that, and
+dropping the result instead would be a silent false negative, which Rule 3
+forbids. An unlisted class contributes no entry to the `rules` array.
+
 `finding.citations` render as `relatedLocations` with the citation title as the
 message and the source URL as the artifact location, so a Track 2 finding's
 grounding is visible in the alert rather than buried in a property.
