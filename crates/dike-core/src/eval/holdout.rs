@@ -479,4 +479,56 @@ mod tests {
         let zulu = table.find("| `zulu-class` | 1.000").expect("{table}");
         assert!(alpha < zulu, "{table}");
     }
+
+    /// The producer and the consumer, in one test.
+    ///
+    /// The three tests above hand `score_case` findings whose
+    /// `absorbed_handlers` the test itself filled in. None of them proves that
+    /// anything in the pipeline actually POPULATES that field — so if
+    /// `collapse_by_subject` stopped recording absorbed handlers, or recorded
+    /// them somewhere else, every one of them would still pass while a real
+    /// scored run silently went back to calling genuine finds misses.
+    ///
+    /// This is the case `benchmarks/holdout/cases.toml` was written around:
+    /// `woofi-create-wooracle-unbound-admin`, where the defect is reported
+    /// under `set_oracle_maximum_age` and `create_wooracle` is one of the
+    /// handlers that row absorbed. The collapse folds; the scorer must still
+    /// find it.
+    #[test]
+    fn the_collapse_populates_the_field_the_scorer_reads() {
+        // Built the way detectors build them: one defect on one subject, seen
+        // from three handlers, nothing absorbed yet.
+        let produced = vec![
+            finding("missing-authority-binding", "set_oracle_maximum_age", &[]),
+            finding("missing-authority-binding", "create_wooracle", &[]),
+            finding("missing-authority-binding", "create_pool", &[]),
+        ];
+        assert!(
+            produced.iter().all(|f| f.absorbed_handlers.is_empty()),
+            "fixture must start with nothing absorbed, or it proves nothing"
+        );
+
+        let collapsed = crate::merge::collapse_by_subject(produced);
+        assert_eq!(collapsed.len(), 1, "one subject, one row: {collapsed:#?}");
+
+        // The surviving row is reported under ONE handler. A case naming
+        // either of the other two must still score as a hit.
+        let reported_on = collapsed[0].location.handler.clone();
+        for case_handler in ["set_oracle_maximum_age", "create_wooracle", "create_pool"] {
+            let outcome = score_case(
+                &target(case_handler, "missing-authority-binding"),
+                &collapsed,
+            );
+            assert!(
+                outcome.is_hit(),
+                "{case_handler} scored {outcome:?} against a row reported on {reported_on}"
+            );
+            if case_handler != reported_on {
+                assert!(
+                    matches!(outcome, HoldoutOutcome::Absorbed { .. }),
+                    "{case_handler} should be Absorbed, got {outcome:?}"
+                );
+            }
+        }
+    }
 }
