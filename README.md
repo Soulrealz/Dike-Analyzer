@@ -206,14 +206,17 @@ runs against a frontier model, never for iteration.
   `removed-guard`, which only Track 2 reports, while the scorer runs Track 1
   only — so a run today reaches two of the six. The command says so before it
   scores anything.
-- **Track 2 has never detected anything in a scored run.** Recall is 0.000 on
-  every class against `qwen2.5-coder:14b`, and that is a real measurement rather
-  than a broken pipe: the plumbing was fixed until dropped replies went from 36
-  to 0, and the number did not move. The model returns an empty array for most
-  units. The open question is whether retrieval is too coarse (one query per
-  handler, built from the whole handler description) or whether the local model
-  is the ceiling, and comparing it against a frontier model on the same
-  retrieved context is what would tell the two apart.
+- **Track 2 detects, but it is noisy and thin.** It scored 0.000 on every class
+  until 2026-09-15, when the cause turned out to be the response schema rather
+  than the model: a root-level JSON array can be satisfied by `[]`, which is the
+  cheapest path through a constrained decoder, and the decoder took it every
+  time. Wrapped in an object, the same model on the same prompts reports real,
+  correctly cited findings. Against `qwen2.5-coder:14b` it now reaches recall
+  0.333 on `missing-authority-binding` at precision 1.000 and 0.000 elsewhere,
+  with a noise floor of 6 findings on the clean fixture against Track 1's 0. So
+  it finds things, and it also reports things that are not there. Whether it
+  earns its complexity at this model size is still open, and `--model` is a
+  drop-in string for asking that question of a bigger one.
 - **`cargo fmt --check` is not a gate.** The house style is hand-formatted and no
   rustfmt configuration reproduces it, so the CI gate is `clippy`, which is
   deny-by-default here.
@@ -263,11 +266,11 @@ Before adding a test, ask what change would make it fail. If the answer is
 ## Status
 
 Both tracks run end to end, and the eval harness scores them. On the clean
-fixture Track 1 reaches recall 1.000 and precision 1.000 on the four classes with
-a reachable detector, at a noise floor of zero. Track 2 has been verified against
-a live local model: on the vulnerable fixture it independently reports
-`missing-signer` on `withdraw`, which merges with Track 1's finding into a
-corroborated Critical carrying its citation.
+fixture Track 1 reaches recall 1.000 and precision 1.000 on every class with a
+reachable detector, at a noise floor of zero. Track 2 has been scored against a
+live local model and reaches 0.333 on one class: on the vulnerable fixture it
+independently reports `missing-signer` on `withdraw`, which merges with Track 1's
+finding into a corroborated Critical carrying its citation.
 
 Still open: the holdout can be scored but has not been, and the CI LLM job is a
 build check rather than a scored run, because GitHub runners have no GPU and the

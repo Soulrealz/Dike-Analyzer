@@ -125,7 +125,18 @@ impl Analyzer for LlmAnalyzer {
             // The schema comes from the parser rather than being written out
             // here: a hand-copied schema drifts from `RawLlmFinding`, and the
             // model is then constrained to emit something the parser rejects.
-            let mut req = LlmRequest::new(SYSTEM_PROMPT, build_user_prompt(unit, &hits))
+            let user_prompt = build_user_prompt(unit, &hits);
+            // The other half of the reply logging in `llm::structured`. When a
+            // unit comes back empty, the reply alone cannot say whether the
+            // model was asked a bad question — the retrieved text is most of
+            // the prompt, and only this shows what it actually said. `trace`
+            // rather than `debug` because it prints whole documents.
+            tracing::trace!(
+                handler = %unit.handler_name,
+                prompt = %user_prompt,
+                "the prompt sent for this unit"
+            );
+            let mut req = LlmRequest::new(SYSTEM_PROMPT, user_prompt)
                 .with_response_schema(dike_core::llm::structured::findings_schema());
             req.temperature = 0.0;
 

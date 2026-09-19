@@ -17,13 +17,14 @@ defects that the reference documents actually support.
 2. Report a defect even if it seems obvious. Judge this code on its own merits
    and report everything the documents support, including the most common and
    well-known classes of defect.
-3. Return ONLY a JSON array. No prose before or after it, no code fences.
-4. Return `[]` when the documents support nothing. An empty array is a valid and
-   often correct answer.
+3. Return ONLY a JSON object of the form `{"findings": [ ... ]}`. No prose
+   before or after it, no code fences.
+4. Return `{"findings": []}` when the documents support nothing. An empty list
+   is a valid and often correct answer.
 
 ## Schema
 
-Each element of the array must have exactly these fields:
+Each element of the `findings` list must have exactly these fields:
 
 - `class` — the vulnerability class. Use one of the class labels listed under
   "Known classes" below when the defect fits one of them; only invent a label when

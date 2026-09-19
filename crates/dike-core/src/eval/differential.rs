@@ -85,6 +85,20 @@ fn diff_key(finding: &Finding) -> (&str, &str) {
     (finding.location.handler.as_str(), finding.class.as_str())
 }
 
+/// The same identity, qualified by the track that reported it.
+///
+/// "Was this here before the mutation?" has to be asked of one track at a time.
+/// The clean program is analyzed by both, so an untracked key lets a Track 2
+/// false positive on the clean program mark Track 1's genuine detection as
+/// pre-existing noise — which is the harness crediting one track for another's
+/// mistake, in the direction that quietly costs recall. Measured on the real
+/// fixture the day Track 2 first reported anything: `pda-validation-gap` read
+/// 0.250 instead of 1.000.
+fn tracked_diff_key(finding: &Finding) -> (u8, &str, &str) {
+    let (handler, class) = diff_key(finding);
+    (track_order(finding.track), handler, class)
+}
+
 fn matches_label(finding: &Finding, label: &MutationLabel) -> bool {
     diff_key(finding) == (label.handler.as_str(), label.class.as_str())
 }
@@ -110,12 +124,12 @@ fn track_order(track: Track) -> u8 {
 /// the two-track design exists to produce — and the harness must be able to say
 /// that Track 1 caught something Track 2 missed.
 pub fn diff_runs(original: &[Finding], mutant: &[Finding], label: &MutationLabel) -> CaseOutcome {
-    let before: BTreeSet<(&str, &str)> = original.iter().map(diff_key).collect();
+    let before: BTreeSet<(u8, &str, &str)> = original.iter().map(tracked_diff_key).collect();
 
     let mut introduced = Vec::new();
     let mut persistent = Vec::new();
     for finding in mutant {
-        if before.contains(&diff_key(finding)) {
+        if before.contains(&tracked_diff_key(finding)) {
             persistent.push(finding.clone());
         } else {
             introduced.push(finding.clone());
@@ -156,6 +170,39 @@ mod tests {
             handler: handler.into(),
             operator: "signer_to_account_info".into(),
         }
+    }
+
+    /// Found 2026-09-15, the moment Track 2 started reporting anything.
+    ///
+    /// The clean program is analyzed by both tracks. If "was this here before?"
+    /// ignores which track said so, then a false positive from Track 2 on the
+    /// clean program makes Track 1's genuine detection of the injected defect
+    /// look like pre-existing noise, and Track 1 loses the credit. Measured on
+    /// the real fixture: `pda-validation-gap` static recall read 0.250 instead
+    /// of 1.000, because Track 2 reported that class on three clean handlers.
+    ///
+    /// The two tracks are compared separately or they are not being compared.
+    #[test]
+    fn one_tracks_noise_does_not_swallow_the_other_tracks_detection() {
+        let label = label("missing-signer", "withdraw");
+        // Track 2 reports this on the CLEAN program: a false positive.
+        let original = vec![f("missing-signer", "withdraw", Track::Llm)];
+        // The mutation injects it, and Track 1 genuinely detects it.
+        let mutant = vec![
+            f("missing-signer", "withdraw", Track::Llm),
+            f("missing-signer", "withdraw", Track::Static),
+        ];
+
+        let outcome = diff_runs(&original, &mutant, &label);
+
+        assert!(outcome.detected, "the injected defect was detected and not credited");
+        assert_eq!(
+            outcome.detecting_tracks,
+            vec![Track::Static],
+            "Track 1 introduced it; Track 2 had it before and gets no credit"
+        );
+        assert_eq!(outcome.persistent.len(), 1, "only Track 2's finding pre-existed");
+        assert_eq!(outcome.persistent[0].track, Track::Llm);
     }
 
     fn f(class: &str, handler: &str, track: Track) -> Finding {

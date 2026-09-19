@@ -616,6 +616,54 @@ real constraint. Ordinary choices need no justification.
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
 
+- **The differential harness compared findings across tracks, so one track's
+  false positive erased the other's detection (found 2026-09-15).** `diff_runs`
+  asked "was this here before the mutation?" with a key of `(handler, class)`
+  and no track. The clean program is analyzed by both tracks, so a Track 2 false
+  positive on a clean handler marked Track 1's genuine detection of the injected
+  defect as pre-existing noise, and Track 1 lost the credit.
+
+  Measured the hour Track 2 first reported anything: static `pda-validation-gap`
+  read **0.250** instead of 1.000 (Track 2 reported that class on three clean
+  handlers), `missing-owner-check` 0.500, `missing-signer` 0.667, and the static
+  noise floor read **5** findings on a fixture Track 1 reports nothing for. The
+  key is now qualified by track. Pinned by
+  `differential::tests::one_tracks_noise_does_not_swallow_the_other_tracks_detection`.
+
+  The bug was ten days old and invisible for all of them, because a track that
+  reports nothing contaminates nothing. Fixing Track 2 is what exposed it. The
+  lesson generalises: a harness that has only ever run with one of its inputs
+  empty has not been tested, and its numbers were never safe to quote.
+
+- **A root-level array response schema made Track 2 score 0.000 on every class
+  for ten days (found 2026-09-15).** `findings_schema()` described the reply as
+  a JSON array. Ollama passes the schema to a grammar-constrained decoder, and a
+  root-level array is satisfied and closed by `[]` — the shortest path through
+  that grammar, and the one the decoder took every time.
+
+  Measured against `qwen2.5-coder:14b` over the vulnerable fixture, from a
+  byte-identical prompt, two handlers, two runs each:
+
+  | response schema | `withdraw` | `set_admin` | citations |
+  |---|---|---|---|
+  | root-level array | 0, 0 | 0, 0 | — |
+  | object wrapping the array | 3, 3 | 2, 2 | correct `doc_id`s |
+  | none at all | 3, 3 | 1, 1 | correct `doc_id`s |
+
+  The schema is now `{"findings": [ ... ]}`. An object has to be opened and its
+  required key emitted before anything can close, so the decoder cannot take the
+  empty path for free. The object form also beat *no* schema on `set_admin`, so
+  this is not an argument for dropping constrained decoding — it is an argument
+  for not rooting it at an array.
+
+  Every earlier explanation of Track 2's zero was wrong, and all of them were
+  plausible: dropped replies, coarse retrieval, the model being too small. The
+  retrieval was in fact already returning the right document — "Missing
+  ownership check" ranked top for `withdraw` at 0.82 — and the model was already
+  able to use it. Pinned by
+  `structured::tests::the_schema_wraps_the_array_in_an_object`, which exists
+  because flattening the wrapper back looks exactly like a tidy-up.
+
 - **`absorbed_handlers` is a field because a machine reads it.** The subject
   collapse folds one defect seen from many handlers into one row, and the row
   has always named the handlers it swallowed in its `evidence` prose. The

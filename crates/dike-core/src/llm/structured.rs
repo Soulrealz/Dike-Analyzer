@@ -56,25 +56,53 @@ pub struct RawLlmFinding {
 /// `line` is nullable rather than optional: the prompt asks the model not to
 /// guess a line, and a schema that lets the field be omitted invites a model
 /// to drop it instead of saying `null` — the same answer as missing data.
+/// The single key the reply object is read from, and the one the schema names.
+/// Both sides use this constant so a rename cannot desynchronize them.
+pub const FINDINGS_KEY: &str = "findings";
+
+/// The response schema, as an **object wrapping** the findings array.
+///
+/// Measured 2026-09-15 against `qwen2.5-coder:14b` over the vulnerable fixture,
+/// two handlers, two runs each: with a root-level *array* schema the model
+/// returned `[]` every single time; with this object wrapper it returned 3 and
+/// 2 correctly-cited findings every single time, from a byte-identical prompt.
+/// Ollama passes the schema to a grammar-constrained decoder, and a root-level
+/// array can be satisfied and closed immediately — `[]` is the shortest path
+/// through that grammar, and the decoder takes it. An object must be opened and
+/// its required key emitted before anything can close.
+///
+/// This cost Track 2 every finding it ever made. Do not flatten it back to an
+/// array because the extra nesting looks redundant: the nesting is the fix.
 pub fn findings_schema() -> serde_json::Value {
     serde_json::json!({
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                "class": { "type": "string" },
-                "severity": {
-                    "type": "string",
-                    "enum": ["critical", "high", "medium", "low", "info"]
-                },
-                "confidence": { "type": "number" },
-                "handler": { "type": "string" },
-                "line": { "type": ["integer", "null"] },
-                "evidence": { "type": "string" },
-                "citations": { "type": "array", "items": { "type": "string" } }
+        "type": "object",
+        "properties": {
+            FINDINGS_KEY: {
+                "type": "array",
+                "items": item_schema(),
+            }
+        },
+        "required": [FINDINGS_KEY]
+    })
+}
+
+/// One finding, as the model must emit it.
+fn item_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "class": { "type": "string" },
+            "severity": {
+                "type": "string",
+                "enum": ["critical", "high", "medium", "low", "info"]
             },
-            "required": ["class", "severity", "confidence", "handler", "evidence", "citations"]
-        }
+            "confidence": { "type": "number" },
+            "handler": { "type": "string" },
+            "line": { "type": ["integer", "null"] },
+            "evidence": { "type": "string" },
+            "citations": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["class", "severity", "confidence", "handler", "evidence", "citations"]
     })
 }
 
@@ -110,6 +138,19 @@ pub struct SchemaViolation(pub String);
 /// arrays are inside a candidate rather than beside it.
 pub fn parse_findings(raw: &str) -> Result<Vec<RawLlmFinding>, SchemaViolation> {
     let text = strip_code_fences(raw);
+
+    // The shape the schema asks for: `{"findings": [...]}`. A named key is
+    // better evidence of intent than any span the scanner below could pick,
+    // so it wins outright when the model gives us one — including when it
+    // names an empty list beside some other array of its own.
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(findings) = obj.get(FINDINGS_KEY) {
+            return serde_json::from_value::<Vec<RawLlmFinding>>(findings.clone()).map_err(|e| {
+                SchemaViolation(format!("`{FINDINGS_KEY}` did not match the schema: {e}"))
+            });
+        }
+    }
+
     let spans = array_spans(&text);
     if spans.is_empty() {
         return Err(SchemaViolation("no JSON array found in the response".to_string()));
@@ -578,7 +619,8 @@ mod tests {
     #[test]
     fn the_schema_requires_exactly_the_fields_the_parser_requires() {
         let schema = findings_schema();
-        let required: Vec<&str> = schema["items"]["required"]
+        let items = &schema["properties"][FINDINGS_KEY]["items"];
+        let required: Vec<&str> = items["required"]
             .as_array()
             .expect("required list")
             .iter()
@@ -587,13 +629,28 @@ mod tests {
         for field in ["class", "severity", "confidence", "handler", "evidence"] {
             assert!(required.contains(&field), "`{field}` is required by the parser: {required:?}");
         }
-        let props = schema["items"]["properties"].as_object().expect("properties");
+        let props = items["properties"].as_object().expect("properties");
         assert!(props.contains_key("line"), "the parser reads `line`");
 
         // The proof that the two agree: a reply shaped by the schema parses.
-        let shaped = r#"[{"class":"c","severity":"high","confidence":0.5,
-                          "handler":"h","line":null,"evidence":"e","citations":["doc-01"]}]"#;
+        let shaped = r#"{"findings":[{"class":"c","severity":"high","confidence":0.5,
+                          "handler":"h","line":null,"evidence":"e","citations":["doc-01"]}]}"#;
         parse_findings(shaped).expect("a reply matching the schema must parse");
+    }
+
+    /// The measurement in `findings_schema`'s doc comment, pinned.
+    ///
+    /// A root-level array schema is satisfied by `[]`, which is the shortest
+    /// path through Ollama's constrained decoder and the one it took every
+    /// time: Track 2 scored 0.000 on every class for as long as this was an
+    /// array. Flattening the wrapper away is the regression that costs the
+    /// whole track, and it looks like a tidy-up.
+    #[test]
+    fn the_schema_wraps_the_array_in_an_object() {
+        let schema = findings_schema();
+        assert_eq!(schema["type"], "object", "a root-level array schema decodes to `[]`");
+        assert_eq!(schema["required"][0], FINDINGS_KEY);
+        assert_eq!(schema["properties"][FINDINGS_KEY]["type"], "array");
     }
 
     /// Observed on the 2026-09-06 Track 2 eval: 36 of 80 units were dropped,
@@ -713,6 +770,42 @@ That is all."#;
             "the same document under two names must not count twice: {:?}",
             kept.citations
         );
+    }
+
+    /// The reply is an object with a `findings` key, which is the shape the
+    /// schema now asks for. When that object carries a second array the model
+    /// wrote for its own reasons — what it considered and rejected, say —
+    /// "the candidate parsing into the most findings wins" picks the wrong
+    /// one, and the tool reports a defect the model explicitly did not report.
+    ///
+    /// Named keys beat span-scanning whenever the model gives us one.
+    #[test]
+    fn an_object_reply_is_read_from_its_findings_key_not_by_scanning() {
+        let raw = r#"{
+          "findings": [],
+          "rejected": [
+            {"class": "missing-signer", "severity": "critical", "confidence": 0.9,
+             "handler": "withdraw", "evidence": "considered and ruled out",
+             "citations": ["d1"]}
+          ]
+        }"#;
+        let found = parse_findings(raw).expect("an object reply must parse");
+        assert!(
+            found.is_empty(),
+            "reported a finding the model put under `rejected`: {found:#?}"
+        );
+    }
+
+    /// The same object shape, carrying real findings.
+    #[test]
+    fn an_object_reply_yields_the_findings_it_names() {
+        let raw = r#"{"findings": [
+            {"class": "missing-signer", "severity": "critical", "confidence": 0.9,
+             "handler": "withdraw", "evidence": "no signer", "citations": ["d1"]}
+        ]}"#;
+        let found = parse_findings(raw).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].handler, "withdraw");
     }
 
     /// The guarantee the grounding filter actually makes, unchanged by the
