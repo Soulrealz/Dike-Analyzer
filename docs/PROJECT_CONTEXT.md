@@ -979,6 +979,22 @@ notes and *is* committed.
 
 ## Known gaps
 
+- **`pda-sharing` (sealevel-attacks category 8) is not separable by any static
+  rule, and the attempt was deliberately abandoned (2026-09-19).** The
+  category's `insecure` and `secure` variants have *identical* accounts
+  structs, identical handler shapes and identical call sequences. The only
+  difference is which field seeds the CPI signer: `pool.mint` in the insecure
+  one, `pool.withdraw_destination` in the secure one. Telling those apart
+  requires knowing that a mint is shared across pools while a withdraw
+  destination is unique to one — a fact about the protocol's data model, not
+  about its code. Any rule firing on "the CPI signer's seeds come from a field
+  of an account" fires on both variants, which is the "rule firing on
+  something both versions share" the adjudication doc already names as proving
+  nothing. Reaching this needs the seed expression related to the account's
+  cardinality, which is dataflow plus a data model — not a detector.
+  `benchmarks/adjudication/2026-09-19-sealevel-attacks.md` carries the
+  evidence.
+
 - **A finding merged from multiple sources carries no id, and therefore no
   SARIF fingerprint (found 2026-09-19, in whole-branch review of the SARIF
   work).** `merge::corroborate` and the same-track branch of `merge::merge`

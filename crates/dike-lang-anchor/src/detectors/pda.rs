@@ -32,6 +32,25 @@ fn derived_in(program: &Program, ty: &str) -> Vec<String> {
         .collect()
 }
 
+/// The last path segment of a call name, so `Pubkey::create_program_address`
+/// and a bare `create_program_address` both match.
+fn callee(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+/// A `u8` argument the caller fills whose name reads as a bump seed.
+///
+/// The argument is the whole defect. A bump the *program* persisted and reuses
+/// is the ordinary way to sign a CPI and appears in almost every real Anchor
+/// program; a bump the *caller* chooses is the one that can be non-canonical.
+fn caller_supplied_bump(handler: &Handler) -> Option<&str> {
+    handler
+        .args
+        .iter()
+        .find(|a| a.ty == "u8" && a.name.contains("bump"))
+        .map(|a| a.name.as_str())
+}
+
 impl Detector for PdaValidationGapDetector {
     fn class(&self) -> &'static str {
         PDA_VALIDATION_GAP
@@ -45,6 +64,42 @@ impl Detector for PdaValidationGapDetector {
 
     fn run(&self, program: &Program, handler: &Handler, accounts: &AccountsStruct) -> Vec<Finding> {
         let mut out = Vec::new();
+
+        // A caller-supplied bump reaching `create_program_address`
+        // (sealevel-attacks category 7). Unlike the two rules below this is a
+        // property of the handler body, not of a declaration, so it is
+        // evaluated once per handler rather than per account.
+        //
+        // `create_program_address` derives from exactly the bump it is given
+        // and fails only if that bump yields no valid address. Several bumps
+        // usually do, so a caller who picks a non-canonical one derives a
+        // different address that passes every check written against it.
+        // `find_program_address` is the fix: it returns the canonical bump, so
+        // a body that calls it has something to compare against and is left
+        // alone here.
+        if let Some(call) = handler.body.calls.iter().find(|c| callee(&c.name) == "create_program_address")
+        {
+            let canonical = handler.body.calls.iter().any(|c| callee(&c.name) == "find_program_address");
+            if let (false, Some(bump)) = (canonical, caller_supplied_bump(handler)) {
+                out.push(super::finding_at(
+                    self,
+                    handler,
+                    &handler.file,
+                    bump,
+                    call.line,
+                    format!(
+                        "`{}` is a caller-supplied bump passed to `create_program_address`, and \
+                         this handler never derives the canonical bump to compare it against. \
+                         `create_program_address` accepts any bump that yields a valid address, \
+                         so a caller may pick a non-canonical one and derive a different account \
+                         that satisfies every check written against this address. Derive with \
+                         `find_program_address`, or pin the account with Anchor's `seeds` and \
+                         `bump` constraints.",
+                        bump
+                    ),
+                ));
+            }
+        }
         for d in &accounts.decls {
             let line = if d.attr_line != 0 { d.attr_line } else { d.line };
 
@@ -266,5 +321,98 @@ mod tests {
         let a = findings_for(&src);
         let b = findings_for(&src);
         assert_eq!(a, b);
+    }
+
+    /// Category 7 of sealevel-attacks, in the shape the Anchor authors wrote
+    /// it. `create_program_address` accepts whatever bump it is handed, so a
+    /// caller passing a non-canonical one derives a *different* valid address.
+    fn bump_program(call: &str, args: &str) -> String {
+        format!(
+            r#"
+            #[program]
+            pub mod bumpy {{
+                pub fn set_value(ctx: Context<BumpSeed>{args}) -> Result<()> {{
+                    let address = {call}(&[key.to_le_bytes().as_ref(), &[bump]], ctx.program_id)?;
+                    if address != ctx.accounts.data.key() {{
+                        return Err(ProgramError::InvalidArgument.into());
+                    }}
+                    Ok(())
+                }}
+            }}
+            #[derive(Accounts)]
+            pub struct BumpSeed<'info> {{
+                pub data: Account<'info, Data>,
+            }}
+        "#
+        )
+    }
+
+    #[test]
+    fn a_caller_supplied_bump_reaching_create_program_address_is_reported() {
+        // Fails if the rule is absent.
+        let f = findings_for(&bump_program("Pubkey::create_program_address", ", key: u64, bump: u8"));
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert_eq!(f[0].class.as_str(), PDA_VALIDATION_GAP);
+        assert!(f[0].evidence.contains("bump"), "{}", f[0].evidence);
+    }
+
+    #[test]
+    fn find_program_address_alone_is_not_reported() {
+        // The `secure` variant. Fails if the rule fires on any derivation call
+        // rather than on `create_program_address` specifically.
+        let f = findings_for(&bump_program("Pubkey::find_program_address", ", key: u64, bump: u8"));
+        assert!(f.is_empty(), "{f:#?}");
+    }
+
+    #[test]
+    fn a_handler_that_derives_nothing_is_not_reported() {
+        // The `recommended` variant pins the derivation with Anchor's own
+        // `seeds`/`bump` constraints and does no arithmetic on addresses.
+        // Fails if the rule fires on the presence of a bump argument alone.
+        let src = r#"
+            #[program]
+            pub mod bumpy {
+                pub fn set_value(ctx: Context<BumpSeed>, key: u64, bump: u8) -> Result<()> { Ok(()) }
+            }
+            #[derive(Accounts)]
+            pub struct BumpSeed<'info> {
+                pub data: Account<'info, Data>,
+            }
+        "#;
+        assert!(findings_for(src).is_empty());
+    }
+
+    #[test]
+    fn a_canonical_bump_computed_alongside_is_not_reported() {
+        // `find_program_address` returns the canonical bump, so a body that
+        // calls both has something to compare against. Fails if the
+        // `find_program_address` exclusion is dropped.
+        let src = r#"
+            #[program]
+            pub mod bumpy {
+                pub fn set_value(ctx: Context<BumpSeed>, key: u64, bump: u8) -> Result<()> {
+                    let (expected, canonical) = Pubkey::find_program_address(&[key.to_le_bytes().as_ref()], ctx.program_id);
+                    let address = Pubkey::create_program_address(&[key.to_le_bytes().as_ref(), &[bump]], ctx.program_id)?;
+                    if canonical != bump { return Err(ProgramError::InvalidArgument.into()); }
+                    Ok(())
+                }
+            }
+            #[derive(Accounts)]
+            pub struct BumpSeed<'info> {
+                pub data: Account<'info, Data>,
+            }
+        "#;
+        let f = findings_for(src);
+        assert!(f.is_empty(), "{f:#?}");
+    }
+
+    #[test]
+    fn a_stored_bump_is_not_reported() {
+        // Signing a CPI with a bump the program itself persisted is the normal
+        // correct pattern and is everywhere in real Anchor code. Fails if the
+        // caller-supplied-argument condition is dropped — which would
+        // reproduce the precision collapse the 2026-09-19 adjudication found.
+        let f = findings_for(&bump_program("Pubkey::create_program_address", ", key: u64"));
+        assert!(f.is_empty(), "{f:#?}");
     }
 }

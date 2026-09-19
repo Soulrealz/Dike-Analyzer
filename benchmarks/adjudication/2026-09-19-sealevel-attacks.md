@@ -28,12 +28,12 @@ rule firing on something both versions share. What counts is telling them apart.
 | 4 | initialization | 1 | 1 | 0 | correct: `secure` still has no owner check |
 | 5 | arbitrary-cpi | 5 | 5 | 0 | no detector for the class; the 5 are noise |
 | 6 | duplicate-mutable-accounts | 0 | 0 | 0 | no detector for the class |
-| 7 | bump-seed-canonicalization | 0 | 0 | 0 | **gap** — this is `pda-validation-gap`'s subject |
-| 8 | pda-sharing | 0 | 0 | 0 | **gap** — same |
+| 7 | bump-seed-canonicalization | 1 | 0 | 0 | **discriminates** (since 2026-09-19; see below) |
+| 8 | pda-sharing | 0 | 0 | 0 | not statically separable — see below |
 | 9 | closing-accounts | 1 | 2 | 1 | no detector for the class; noise |
 | 10 | sysvar-address-checking | 1 | 0 | 0 | **discriminates** |
 
-Dike tells the vulnerable version from the fixed one in **3 of 11** categories,
+Dike tells the vulnerable version from the fixed one in **4 of 11** categories,
 and every `recommended` variant is clean, because `recommended` uses Anchor's
 typed constraints (`Signer<'info>`, `Account<'info, T>`, `has_one`) which the
 analyzer understands well.
@@ -125,3 +125,67 @@ The suite is an external checkout that CI would have to clone, and its value is
 as a periodic honesty check rather than a gate. The numbers above are a
 snapshot; rerun them after any change to the suppression pass or to
 `missing-owner-check`, which is the class doing nearly all the work here.
+
+## Addendum, 2026-09-19 — categories 7 and 8 revisited
+
+Both were recorded above as gaps in `pda-validation-gap`'s own subject. On a
+second pass they turned out to be two different kinds of problem, and only one
+of them was a detector's to solve.
+
+### 7 — bump-seed-canonicalization: closed
+
+The whole discriminator is in the handler body, and it was already in the IR:
+
+| variant | derivation call | args | now reported |
+|---|---|---|---:|
+| `insecure` | `Pubkey::create_program_address` | `key, new_value, bump: u8` | 1 |
+| `secure` | `Pubkey::find_program_address` | `key, new_value, bump: u8` | 0 |
+| `recommended` | none (Anchor `seeds` + `bump`) | `key, new_value` | 0 |
+
+`create_program_address` derives from exactly the bump it is handed and fails
+only when that bump yields no valid address — and several usually do. A caller
+who picks a non-canonical bump therefore derives a *different* address that
+satisfies every check written against it. `find_program_address` returns the
+canonical bump, so a body that calls it has something to compare against.
+
+`detectors/pda.rs` gained a third rule: `create_program_address` in the body,
+no `find_program_address` in the same body, and a caller-supplied `u8`
+argument whose name reads as a bump. It needed no new IR and no dataflow.
+
+**The caller-supplied-argument condition is load-bearing, not incidental.**
+Signing a CPI with a bump the program itself persisted — `&[seed, &[vault.bump]]`
+— is the ordinary correct pattern and appears in nearly every real Anchor
+program. A rule without that condition fires on all of them, which would
+reproduce the precision collapse `2026-09-19-real-programs.md` records. The
+test `a_stored_bump_is_not_reported` pins it, and removing the condition makes
+that test fail.
+
+Measured after the change: the three variants score 1 / 0 / 0; `vault` and
+`escrow` still report zero findings; and the static eval still puts
+`pda-validation-gap` at recall 1.000, precision 1.000 over 13 mutants with a
+noise floor of 0 — so the history series stays comparable (Rule 5).
+
+### 8 — pda-sharing: not a detector's problem
+
+`insecure` and `secure` have identical accounts structs, identical handler
+shapes and identical call sequences. The entire difference is one seed:
+
+```rust
+// insecure
+let seeds = &[ctx.accounts.pool.mint.as_ref(), &[ctx.accounts.pool.bump]];
+// secure
+let seeds = &[ctx.accounts.pool.withdraw_destination.as_ref(), &[ctx.accounts.pool.bump]];
+```
+
+Separating them means knowing that a mint is shared across many pools while a
+withdraw destination belongs to one. That is a fact about the protocol's data
+model, not about its source. Any rule firing on "the CPI signer's seeds come
+from a field of a passed account" fires on both variants — precisely the
+"rule firing on something both versions share" this document opens by saying
+proves nothing.
+
+Recorded in `PROJECT_CONTEXT.md`'s "Known gaps" rather than left as an open
+invitation, so the next reader does not re-derive it. The `recommended`
+variant is reachable today by different means — it pins the pool with
+`seeds = [withdraw_destination.key().as_ref()]`, which is an Anchor constraint
+the parser already sees.
