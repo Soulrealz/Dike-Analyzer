@@ -23,12 +23,18 @@ fn sarif_for(fixture: &str) -> serde_json::Value {
 }
 
 #[test]
-fn the_vulnerable_fixture_renders_seven_results_across_five_rules() {
-    // Verified 2026-09-19. Seven results, five distinct classes: the case
-    // that catches a renderer emitting one rule per result.
+fn the_vulnerable_fixture_renders_eight_results_across_six_rules() {
+    // Verified 2026-09-19. Eight results, six distinct classes: the case that
+    // catches a renderer emitting one rule per result.
+    //
+    // 7/5 -> 8/6 on 2026-09-19, when `removed-guard` gained a rule for an
+    // account that moves value, is named after state the handler writes, and
+    // is unpinned. `vault_token` is that account in BOTH `deposit` and
+    // `withdraw`; `collapse_by_subject` folds the two handlers into one row,
+    // which is why this is 8 and not 9.
     let v = sarif_for("tests/fixtures/programs/leaky_vault");
     let results = v["runs"][0]["results"].as_array().unwrap();
-    assert_eq!(results.len(), 7, "results: {results:#?}");
+    assert_eq!(results.len(), 8, "results: {results:#?}");
 
     let classes: BTreeSet<&str> =
         results.iter().map(|r| r["ruleId"].as_str().unwrap()).collect();
@@ -40,9 +46,10 @@ fn the_vulnerable_fixture_renders_seven_results_across_five_rules() {
             "missing-authority-binding",
             "pda-validation-gap",
             "unchecked-arithmetic",
+            "removed-guard",
         ])
     );
-    assert_eq!(v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap().len(), 5);
+    assert_eq!(v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap().len(), 6);
 }
 
 #[test]

@@ -32,6 +32,34 @@ pub struct HandlerBody {
     pub arithmetic: Vec<ArithOp>,
     pub checks: Vec<ImperativeCheck>,
     pub state_writes: Vec<StateWrite>,
+    /// Accounts that reach a value-moving CPI in this handler, by the path the
+    /// body actually takes: through `let` bindings, struct literals and method
+    /// calls, not merely by appearing in the sink call's own argument tokens.
+    ///
+    /// The distinction is load-bearing. `tests/fixtures/programs/vault` builds
+    /// its `Transfer` struct into a local and hands that to `CpiContext::new`,
+    /// three hops from the account to `token::transfer`;
+    /// `sealevel-attacks/5-arbitrary-cpi/insecure` inlines the same accounts
+    /// directly into the call. A rule reading only the sink's own arguments
+    /// treats those two differently, which is keying on code shape rather than
+    /// on semantics.
+    ///
+    /// Flow-insensitive and intra-procedural: no loops, no branches, no
+    /// cross-function propagation. Nothing in scope needs them and Rule 5 wants
+    /// this cheap and deterministic.
+    ///
+    /// Over-approximate, deliberately (Rule 3). Taint follows a value wherever
+    /// it goes, including into a signer-seed array: in `vault`'s `withdraw`,
+    /// `admin` is listed because `ctx.accounts.admin.key()` is bound to
+    /// `admin_key`, which reaches `CpiContext::new_with_signer` through
+    /// `vault_seeds` and `signer_seeds`. The account does not move tokens
+    /// there — it derives the PDA that authorizes the move. A consumer must
+    /// therefore treat membership as "touches a value-moving call", not as
+    /// "is a party to the transfer".
+    ///
+    /// Sorted and deduplicated, so it is byte-stable across runs (Rule 5).
+    #[serde(default)]
+    pub reaches_value_sink: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

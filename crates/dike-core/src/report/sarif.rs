@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn two_results_of_one_class_share_a_rule_index() {
-        // This is the `leaky_vault` shape: seven results, five rules.
+        // This is the `leaky_vault` shape: more results than rules.
         let catalog = [doc("class-a", None)];
         let r = report_with(
             vec![

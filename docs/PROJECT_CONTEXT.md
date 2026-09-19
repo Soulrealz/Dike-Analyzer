@@ -627,8 +627,8 @@ real constraint. Ordinary choices need no justification.
   across every file for no behavioural gain. The gate is `clippy`, which is
   deny-by-default here and has caught real defects.
 
-- **`removed-guard` has a Track 1 detector, and its recall is 0.200 because of
-  the mutants, not the detector (2026-09-19).** The class was Track-2-only on
+- **`removed-guard` has a Track 1 detector; its recall went 0.200 → 0.600 when
+  the detector learned to read dataflow (2026-09-19).** The class was Track-2-only on
   the reasoning that "the absence of an arbitrary expression is not a
   structural signal". That is true of an arbitrary expression and false of the
   one programs actually write. Surveyed over three real Anchor programs, every
@@ -642,17 +642,30 @@ real constraint. Ordinary choices need no justification.
   reporting the authority ones too would put the same defect under two class
   names. Zero findings on both clean fixtures and all three real programs.
 
-  The remaining four `strip_constraint` mutants are not detector failures, and
-  each is a different reason:
+  **That first rule scored 0.200, and the reading of why was half wrong.** The
+  four uncredited `strip_constraint` mutants were recorded as "not detector
+  failures", with `vault/deposit` and `vault/withdraw` blamed on `TokenAccount`
+  being an `anchor_spl` type with no state struct in the program, so the
+  analyzer had no field list for it. The conclusion drawn — *raising this number
+  means teaching the analyzer about external account types* — was wrong. It
+  needed a different question, not a bigger symbol table.
+
+  A fourth rule added later the same day takes those two. It fires when an
+  account reaches a value-moving CPI in the handler body
+  (`HandlerBody.reaches_value_sink`, see Quirks), is named after an account the
+  handler state-writes, and nothing pins its identity. `vault_token_account` is
+  the destination of the transfer whose amount is credited to `vault`, and with
+  the constraint stripped nothing says which token account it is. **0.200 →
+  0.600 (3 of 5), precision still 1.000, noise floor still 0, every other class
+  unchanged.** The name condition is doing more of the work than the dataflow —
+  see "Known gaps".
+
+  The two that remain are still not detector failures:
 
   | mutant | why it is not credited |
   |---|---|
-  | `vault/deposit`, `vault/withdraw` | the guard is on `TokenAccount.owner`; `TokenAccount` is an `anchor_spl` type with no state struct in the program, so the analyzer has no field list for it |
   | `vault/close_vault` | `constraint = vault.amount == 0` is a business rule. Nothing structural says a vault must be empty before closing, and no detector can infer it |
   | `escrow/accept_admin` | detected, on the right handler, and reported as `missing-authority-binding` — a more precise name than the operator's label. The harness credits by class, so it counts for neither |
-
-  Raising this number means teaching the analyzer about external account types,
-  not writing more rules.
 
 - **Guards written as plain Rust were invisible to the suppression pass, and
   an owner comparison did not count as an owner check (both fixed
@@ -748,7 +761,8 @@ real constraint. Ordinary choices need no justification.
 
   Findings on the same population went 4 → 1 → **0**, with every eval class
   still at 1.000, the noise floor still 0, and `leaky_vault` still yielding all
-  8 of its findings. Precision is no longer 0.000; it is **undefined**, on a
+  8 of its findings (a Track 1 count read that day; the value-sink rule added
+  later on 2026-09-19 took it to 9 before subject collapse, 8 merged). Precision is no longer 0.000; it is **undefined**, on a
   denominator of zero. Nothing distinguishes "these programs have no defect of
   these classes" from "the detectors cannot see theirs" — the holdout is that
   instrument and it is unspent. Recall on real
@@ -984,6 +998,43 @@ diffed, cached and compared between runs; a clock in it makes every run look
 changed and defeats Rule 5's byte-identical guarantee for the one output most
 likely to be diffed.
 
+### `HandlerBody.reaches_value_sink` is dataflow, and it over-approximates
+
+Added 2026-09-19. A flow-insensitive, intra-procedural taint pass in
+`parser/body.rs` propagates every `ctx.accounts.<name>` through `let` bindings,
+struct literals and calls into a sink set of value-moving CPIs (`transfer`,
+`transfer_checked`, `burn`, `mint_to`, matched on the last path segment, plus a
+native `lamports` / `borrow_mut` assignment). The result is a sorted,
+deduplicated `Vec<String>` on `HandlerBody`, so `dike ir` shows it — a dataflow
+fact nobody can inspect is one nobody can trust. It is `#[serde(default)]`
+because older IR JSON must still deserialize.
+
+**Why it is not "accounts named in the sink call".** `tests/fixtures/programs/vault`
+builds its `Transfer` into a local and hands that to `CpiContext::new`, three
+hops from the account to `token::transfer`;
+`sealevel-attacks/5-arbitrary-cpi/insecure` inlines the same accounts directly
+into the call. A rule reading only the sink's own argument tokens treats those
+two differently, which is keying on code shape rather than on semantics — the
+mistake that invalidated an earlier attempt at this
+(`benchmarks/adjudication/2026-09-19-sealevel-attacks.md`).
+
+**`CpiContext::new` is deliberately not a sink**, and for the same reason
+`CallSite::is_cpi` cannot serve as the sink predicate — `is_cpi` is already true
+for the constructor, so reusing it would report a handler that builds a context
+and never invokes it.
+
+**It over-approximates, on purpose (Rule 3).** Taint follows a value wherever it
+goes, including into a signer-seed array: in `vault`'s `withdraw`, `admin` is
+listed because `ctx.accounts.admin.key()` reaches
+`CpiContext::new_with_signer` through `vault_seeds` and `signer_seeds`. That
+account does not move tokens — it derives the PDA authorizing the move. Read
+membership as "touches a value-moving call", never as "is a party to the
+transfer".
+
+No loops, no branches, no cross-function propagation. Nothing in scope needs
+them, and each would make the result depend on evaluation order the visitor does
+not model.
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -992,6 +1043,22 @@ report text. `corpus/cache/` is gitignored. `corpus/notes/` holds our own derive
 notes and *is* committed.
 
 ## Known gaps
+
+- **`removed-guard`'s value-sink rule ties a token account to state by NAME
+  (2026-09-19).** The rule fires when an account reaches a value-moving CPI, is
+  named after an account the handler state-writes, and nothing pins it. The
+  relationship it is reaching for — *this token account holds the balance that
+  state account accounts for* — is exactly what `constraint =
+  vault_token_account.owner == vault.key()` expresses, and nothing in this slice
+  recovers it in general. **A program that names its vault token account
+  `treasury` while writing state to `vault` is missed.** The dataflow rules out
+  accounts that never touch value; the *name* is what separates the program's
+  own side of a transfer from the counterparty's, and it is carrying more of the
+  discrimination than the dataflow is. The name condition is not optional
+  padding: without it the rule fires on `depositor_token_account` and
+  `admin_token_account` in the clean `vault` fixture, both of which are correct
+  code — an unpinned account reaching a transfer is the ordinary case, not a
+  defect. Recorded with the rule itself, not discovered afterwards.
 
 - **`pda-sharing` (sealevel-attacks category 8) is not separable by any static
   rule, and the attempt was deliberately abandoned (2026-09-19).** The

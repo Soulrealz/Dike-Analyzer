@@ -1,5 +1,5 @@
 use crate::ir::{ArithOp, CallSite, CheckKind, HandlerBody, ImperativeCheck, StateWrite};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
@@ -13,6 +13,21 @@ struct BodyVisitor {
     /// incorrectly "leak" that shadow to code after the block that uses the outer binding.
     /// Acceptable for a triage IR; not sound for a real borrow checker.
     aliases: HashMap<String, String>,
+    /// local variable name -> the set of accounts whose value flows into it.
+    ///
+    /// Distinct from `aliases`, which answers "is this local *the* account" for
+    /// state-write attribution. This answers "which accounts' values are inside
+    /// this local", which is a union and not a single name: a `Transfer { .. }`
+    /// struct literal carries three at once.
+    ///
+    /// A `HashMap` is safe here despite Rule 5 because it is only ever looked
+    /// up by key and never iterated; the accumulator that reaches the IR is the
+    /// `BTreeSet` below.
+    taint: HashMap<String, BTreeSet<String>>,
+    /// Accounts seen flowing into a value-moving sink. A `BTreeSet` so the IR
+    /// field is sorted and deduplicated by construction, with no later sort to
+    /// forget (Rule 5).
+    reaches_sink: BTreeSet<String>,
 }
 
 /// Collect every identifier in a token stream. The suppression pass intersects
@@ -29,6 +44,38 @@ fn identifiers(tokens: &proc_macro2::TokenStream) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Calls that move value. Domain vocabulary, and therefore in
+/// `dike-lang-anchor` and never in `dike-core` (Rule 2).
+///
+/// Matched on the LAST path segment, so `transfer`, `token::transfer`,
+/// `anchor_spl::token::transfer` and `system_program::transfer` all count
+/// without enumerating the module paths people actually write.
+///
+/// `CpiContext::new` and `new_with_signer` are deliberately absent. They are
+/// intermediate constructors: taint flows *through* them into the `transfer`
+/// that consumes them, and treating the constructor as the sink would report a
+/// handler that builds a context and never invokes it. For the same reason
+/// `CallSite::is_cpi` cannot serve as the sink predicate — it is already true
+/// for `CpiContext::new`.
+const VALUE_SINKS: [&str; 4] = ["transfer", "transfer_checked", "burn", "mint_to"];
+
+fn is_value_sink(path: &str) -> bool {
+    let last = path.rsplit("::").next().unwrap_or(path);
+    VALUE_SINKS.contains(&last)
+}
+
+/// Whether an assignment target is a native lamport balance:
+/// `**a.try_borrow_mut_lamports()?` or `**b.lamports.borrow_mut()`. Lamport
+/// movement is not a CPI at all, so the sink set above never sees it.
+fn is_lamports_target(expr: &syn::Expr) -> bool {
+    let text: String = quote::quote!(#expr)
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    text.contains("lamports") && text.contains("borrow_mut")
 }
 
 /// `ctx.accounts.vault.amount` -> Some("vault"); also resolves through `aliases`,
@@ -57,6 +104,92 @@ fn resolve_account_root(expr: &syn::Expr, aliases: &HashMap<String, String>) -> 
         return Some(names[2].clone());
     }
     names.first().and_then(|first| aliases.get(first)).cloned()
+}
+
+/// Which accounts' values flow into `expr`.
+///
+/// Three propagation forms, which is everything the fixtures and the
+/// `sealevel-attacks` set need: a `let`-bound local, a struct literal, and a
+/// method or function call, whose taint is the union of its receiver's and its
+/// arguments'. The wrapper expressions below (`&x`, `*x`, `(x)`, `x?`,
+/// `x as T`, tuples, arrays, binaries) carry taint through unchanged; they are
+/// not propagation rules so much as the absence of a barrier.
+///
+/// Deliberately NOT handled: loops, branches, and calls into other functions in
+/// the crate. Nothing in scope needs them, and each would make the result
+/// depend on evaluation order this visitor does not model.
+fn expr_taint(
+    expr: &syn::Expr,
+    aliases: &HashMap<String, String>,
+    taint: &HashMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    // A `ctx.accounts.X...` chain, or a local aliased to one, is a source and
+    // needs no further descent.
+    if let Some(account) = resolve_account_root(expr, aliases) {
+        out.insert(account);
+        return out;
+    }
+    // Not `let mut`: it mutates only its `out` argument, never a capture, and
+    // this build denies warnings.
+    let union = |e: &syn::Expr, out: &mut BTreeSet<String>| {
+        out.extend(expr_taint(e, aliases, taint));
+    };
+    match expr {
+        syn::Expr::Path(p) => {
+            if let Some(seg) = p.path.segments.last() {
+                if let Some(t) = taint.get(&seg.ident.to_string()) {
+                    out.extend(t.iter().cloned());
+                }
+            }
+        }
+        syn::Expr::Struct(s) => {
+            for f in &s.fields {
+                union(&f.expr, &mut out);
+            }
+            if let Some(rest) = &s.rest {
+                union(rest, &mut out);
+            }
+        }
+        syn::Expr::MethodCall(m) => {
+            union(&m.receiver, &mut out);
+            for a in &m.args {
+                union(a, &mut out);
+            }
+        }
+        syn::Expr::Call(c) => {
+            for a in &c.args {
+                union(a, &mut out);
+            }
+        }
+        syn::Expr::Reference(r) => union(&r.expr, &mut out),
+        syn::Expr::Unary(u) => union(&u.expr, &mut out),
+        syn::Expr::Paren(p) => union(&p.expr, &mut out),
+        syn::Expr::Group(g) => union(&g.expr, &mut out),
+        syn::Expr::Try(t) => union(&t.expr, &mut out),
+        syn::Expr::Cast(c) => union(&c.expr, &mut out),
+        syn::Expr::Field(f) => union(&f.base, &mut out),
+        syn::Expr::Index(i) => {
+            union(&i.expr, &mut out);
+            union(&i.index, &mut out);
+        }
+        syn::Expr::Binary(b) => {
+            union(&b.left, &mut out);
+            union(&b.right, &mut out);
+        }
+        syn::Expr::Array(a) => {
+            for e in &a.elems {
+                union(e, &mut out);
+            }
+        }
+        syn::Expr::Tuple(t) => {
+            for e in &t.elems {
+                union(e, &mut out);
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// The identifier a `let` binding names, unwrapping a `Pat::Type` annotation
@@ -98,6 +231,15 @@ impl<'ast> Visit<'ast> for BodyVisitor {
             if let Some(account) = resolve_account_root(&node.left, &self.aliases) {
                 self.body.state_writes.push(StateWrite { account, line });
             }
+            // Native lamport movement: `**a.lamports.borrow_mut() -= n`. Both
+            // sides are recorded — the drained account and the credited one are
+            // each moving value, and Rule 3 favours reporting both.
+            if is_lamports_target(&node.left) {
+                self.reaches_sink
+                    .extend(expr_taint(&node.left, &self.aliases, &self.taint));
+                self.reaches_sink
+                    .extend(expr_taint(&node.right, &self.aliases, &self.taint));
+            }
         }
         visit::visit_expr_binary(self, node);
     }
@@ -113,6 +255,14 @@ impl<'ast> Visit<'ast> for BodyVisitor {
                 line: node.span().start().line as u32,
                 checked: true,
             });
+        }
+        if is_value_sink(&name) {
+            self.reaches_sink
+                .extend(expr_taint(&node.receiver, &self.aliases, &self.taint));
+            for a in &node.args {
+                self.reaches_sink
+                    .extend(expr_taint(a, &self.aliases, &self.taint));
+            }
         }
         self.body.calls.push(CallSite {
             name,
@@ -134,6 +284,12 @@ impl<'ast> Visit<'ast> for BodyVisitor {
                 .args
                 .iter()
                 .any(|a| quote::quote!(#a).to_string().contains("CpiContext"));
+        if is_value_sink(&name) {
+            for a in &node.args {
+                self.reaches_sink
+                    .extend(expr_taint(a, &self.aliases, &self.taint));
+            }
+        }
         self.body.calls.push(CallSite {
             name,
             line: node.span().start().line as u32,
@@ -202,6 +358,14 @@ impl<'ast> Visit<'ast> for BodyVisitor {
     }
 
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        // The plain-`=` spelling of the lamport sink above. Compound assignment
+        // does not reach here — in syn 2.x it parses as `Expr::Binary`.
+        if is_lamports_target(&node.left) {
+            self.reaches_sink
+                .extend(expr_taint(&node.left, &self.aliases, &self.taint));
+            self.reaches_sink
+                .extend(expr_taint(&node.right, &self.aliases, &self.taint));
+        }
         if let Some(account) = resolve_account_root(&node.left, &self.aliases) {
             self.body.state_writes.push(StateWrite {
                 account,
@@ -221,9 +385,15 @@ impl<'ast> Visit<'ast> for BodyVisitor {
             if let Some(init) = &node.init {
                 if let syn::Expr::Reference(r) = init.expr.as_ref() {
                     if let Some(account) = resolve_account_root(&r.expr, &self.aliases) {
-                        self.aliases.insert(name, account);
+                        self.aliases.insert(name.clone(), account);
                     }
                 }
+                // Taint is broader than aliasing: a local holding a
+                // `Transfer { .. }` is not any one account, but three accounts'
+                // values are inside it. Replaces rather than merges — textual
+                // order, later binding wins, as `aliases` above does.
+                let t = expr_taint(&init.expr, &self.aliases, &self.taint);
+                self.taint.insert(name, t);
             }
         }
         visit::visit_local(self, node);
@@ -247,6 +417,9 @@ pub fn summarize_body(f: &syn::ItemFn) -> HandlerBody {
         }
     }
     v.visit_block(&f.block);
+    // A `BTreeSet` drains in sorted order, so the field is sorted and
+    // deduplicated by construction (Rule 5).
+    v.body.reaches_value_sink = v.reaches_sink.into_iter().collect();
     v.body
 }
 
@@ -466,5 +639,206 @@ mod tests {
         assert!(b.arithmetic.iter().any(|a| !a.checked && a.op == "+="));
         assert_eq!(b.state_writes.len(), 1);
         assert_eq!(b.state_writes[0].account, "vault");
+    }
+
+    /// The three-hop shape from `tests/fixtures/programs/vault`, lines 22-28:
+    /// account -> struct literal -> local -> call argument -> sink. A rule that
+    /// reads only `token::transfer`'s own argument tokens sees `cpi_ctx` and
+    /// `amount` and nothing else.
+    ///
+    /// Breaks if: struct-literal propagation is dropped, `let` propagation is
+    /// dropped, argument propagation is dropped, or `transfer` leaves the sink
+    /// set.
+    #[test]
+    fn taint_reaches_a_sink_through_a_struct_literal_a_local_and_a_cpi_context() {
+        let b = body(r#"
+            pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+                let cpi_accounts = Transfer {
+                    from: ctx.accounts.depositor_token_account.to_account_info(),
+                    to: ctx.accounts.vault_token_account.to_account_info(),
+                    authority: ctx.accounts.depositor.to_account_info(),
+                };
+                let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+                token::transfer(cpi_ctx, amount)?;
+                Ok(())
+            }
+        "#);
+        for want in ["depositor", "depositor_token_account", "token_program", "vault_token_account"] {
+            assert!(
+                b.reaches_value_sink.iter().any(|a| a == want),
+                "{want} missing from {:?}",
+                b.reaches_value_sink
+            );
+        }
+    }
+
+    /// The other half of the shape-insensitivity claim: the same accounts
+    /// inlined into the sink call, with no local at all. `leaky_vault` writes
+    /// the first shape and `sealevel-attacks/5-arbitrary-cpi` writes this one;
+    /// a rule that treated them differently would be keying on code shape.
+    ///
+    /// Breaks if: propagation is implemented only over `let` bindings.
+    #[test]
+    fn taint_reaches_an_inlined_sink_with_no_local_binding() {
+        let b = body(r#"
+            pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.depositor_token_account.to_account_info(),
+                            to: ctx.accounts.vault_token_account.to_account_info(),
+                            authority: ctx.accounts.depositor.to_account_info(),
+                        },
+                    ),
+                    amount,
+                )?;
+                Ok(())
+            }
+        "#);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "vault_token_account"), "{:?}", b.reaches_value_sink);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "depositor_token_account"), "{:?}", b.reaches_value_sink);
+    }
+
+    /// An account the handler only writes state on does not reach a value
+    /// sink. If this field meant "every account the handler mentions" it would
+    /// carry no information and the detector reading it would fire on
+    /// everything.
+    ///
+    /// Breaks if: taint is seeded from every `ctx.accounts.X` in the body
+    /// rather than from the ones that flow into a sink.
+    #[test]
+    fn an_account_that_only_takes_a_state_write_does_not_reach_a_sink() {
+        let b = body(r#"
+            pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+                ctx.accounts.config.counter = amount;
+                let cpi_accounts = Transfer {
+                    from: ctx.accounts.source.to_account_info(),
+                    to: ctx.accounts.dest.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                };
+                token::transfer(CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts), amount)?;
+                Ok(())
+            }
+        "#);
+        assert!(!b.reaches_value_sink.iter().any(|a| a == "config"), "{:?}", b.reaches_value_sink);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "source"), "{:?}", b.reaches_value_sink);
+    }
+
+    /// `CpiContext::new` and `new_with_signer` are intermediate constructors,
+    /// not sinks. A handler that builds one and never invokes it moves no
+    /// value.
+    ///
+    /// Breaks if: `CpiContext` joins the sink set, or if `CallSite::is_cpi` is
+    /// reused as the sink predicate — `is_cpi` is already true for
+    /// `CpiContext::new`, which is exactly why it cannot serve here.
+    #[test]
+    fn building_a_cpi_context_without_invoking_it_is_not_a_sink() {
+        let b = body(r#"
+            pub fn deposit(ctx: Context<Deposit>) -> Result<()> {
+                let cpi_accounts = Transfer {
+                    from: ctx.accounts.source.to_account_info(),
+                    to: ctx.accounts.dest.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                };
+                let _unused = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+                Ok(())
+            }
+        "#);
+        assert!(b.reaches_value_sink.is_empty(), "{:?}", b.reaches_value_sink);
+    }
+
+    /// Rule 5. Two sinks touching overlapping accounts must not produce
+    /// duplicates or source-order output; `dike ir` prints this field and the
+    /// eval harness compares runs byte for byte.
+    ///
+    /// Breaks if: the accumulator becomes a `Vec` filled by `push`, or a
+    /// `HashSet`.
+    #[test]
+    fn reaches_value_sink_is_sorted_and_deduplicated() {
+        let b = body(r#"
+            pub fn sweep(ctx: Context<Sweep>, amount: u64) -> Result<()> {
+                token::transfer(CpiContext::new(ctx.accounts.token_program.to_account_info(), Transfer {
+                    from: ctx.accounts.zeta.to_account_info(),
+                    to: ctx.accounts.alpha.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                }), amount)?;
+                token::burn(CpiContext::new(ctx.accounts.token_program.to_account_info(), Burn {
+                    mint: ctx.accounts.alpha.to_account_info(),
+                    from: ctx.accounts.zeta.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                }), amount)?;
+                Ok(())
+            }
+        "#);
+        let mut sorted = b.reaches_value_sink.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(b.reaches_value_sink, sorted, "{:?}", b.reaches_value_sink);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "alpha"));
+        assert!(b.reaches_value_sink.iter().any(|a| a == "zeta"));
+    }
+
+    /// Native lamport movement, which uses no CPI at all. Compound assignment
+    /// parses as `Expr::Binary` in syn 2.x rather than `Expr::Assign` — the
+    /// same trap `visit_expr_binary` already documents — so the sink has to be
+    /// recognized in both places.
+    ///
+    /// Breaks if: the `lamports` / `borrow_mut` assignment sink is dropped, or
+    /// hooked only into `visit_expr_assign`.
+    #[test]
+    fn a_lamports_borrow_mut_assignment_is_a_sink() {
+        let b = body(r#"
+            pub fn drain(ctx: Context<Drain>, amount: u64) -> Result<()> {
+                **ctx.accounts.recipient.lamports.borrow_mut() += amount;
+                Ok(())
+            }
+        "#);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "recipient"), "{:?}", b.reaches_value_sink);
+    }
+
+    /// Flow-insensitive, textual order, later binding wins — the same
+    /// heuristic `aliases` already documents. Pinned so the choice reads as a
+    /// decision rather than an accident.
+    ///
+    /// Breaks if: `let` taint is merged into the existing entry instead of
+    /// replacing it.
+    #[test]
+    fn a_rebound_local_replaces_its_earlier_taint() {
+        let b = body(r#"
+            pub fn shift(ctx: Context<Shift>, amount: u64) -> Result<()> {
+                let accs = Transfer {
+                    from: ctx.accounts.first.to_account_info(),
+                    to: ctx.accounts.dest.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                };
+                let accs = Transfer {
+                    from: ctx.accounts.second.to_account_info(),
+                    to: ctx.accounts.dest.to_account_info(),
+                    authority: ctx.accounts.payer.to_account_info(),
+                };
+                token::transfer(CpiContext::new(ctx.accounts.token_program.to_account_info(), accs), amount)?;
+                Ok(())
+            }
+        "#);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "second"), "{:?}", b.reaches_value_sink);
+        assert!(!b.reaches_value_sink.iter().any(|a| a == "first"), "{:?}", b.reaches_value_sink);
+    }
+
+    /// A method-call sink, the spelling hand-rolled wrappers use. Matching is
+    /// on the LAST path segment so `transfer`, `token::transfer` and
+    /// `anchor_spl::token::transfer` all count without enumerating module
+    /// paths.
+    ///
+    /// Breaks if: only `syn::ExprCall` is hooked and `ExprMethodCall` is not.
+    #[test]
+    fn a_method_call_sink_is_matched_on_its_name() {
+        let b = body(r#"
+            pub fn go(ctx: Context<Go>, amount: u64) -> Result<()> {
+                ctx.accounts.helper.mint_to(ctx.accounts.recipient.to_account_info(), amount)?;
+                Ok(())
+            }
+        "#);
+        assert!(b.reaches_value_sink.iter().any(|a| a == "recipient"), "{:?}", b.reaches_value_sink);
     }
 }

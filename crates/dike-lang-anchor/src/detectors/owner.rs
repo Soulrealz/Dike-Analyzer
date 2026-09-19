@@ -96,7 +96,7 @@ fn compact(text: &str) -> String {
 /// account already exists, and a conditional pin is not one. This is the
 /// recall-favorable side of the call, which is the right side for a check that
 /// deletes findings.
-fn pinned_by_sibling(accounts: &AccountsStruct, name: &str) -> bool {
+pub(crate) fn pinned_by_sibling(accounts: &AccountsStruct, name: &str) -> bool {
     let needle = format!("{name}.key()");
     accounts.decls.iter().any(|other| {
         other.name != name

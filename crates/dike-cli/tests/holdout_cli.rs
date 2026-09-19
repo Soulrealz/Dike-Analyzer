@@ -79,11 +79,21 @@ fn scoring_separates_hits_misses_and_cases_that_were_never_analyzed() {
     let cases = format!(
         "{}{}{}",
         case("hit", "withdraw", "missing-signer"),
-        // `removed-guard` is Track-2-only by design, and this scorer runs
-        // Track 1, so it is a miss whatever the code says. Using a Track 1
-        // class here would tie the test to what the detectors happen to find
-        // in the fixture today.
-        case("miss", "withdraw", "removed-guard"),
+        // A miss grounded in the fixture, not in detector taste:
+        // `leaky_vault`'s `Initialize` declares `admin: Signer<'info>`, so
+        // there IS a signer on that handler and `missing-signer` cannot fire.
+        //
+        // This was `removed-guard` on `withdraw` until 2026-09-19, on the
+        // reasoning that the class was Track-2-only and so a miss whatever the
+        // code said. That premise expired when `removed-guard` gained a Track 1
+        // detector, and it went unnoticed because the detector's first rule
+        // needed a stored `Pubkey` field with a namesake account, which
+        // `leaky_vault` does not have. The rule added later that day — an
+        // account that moves value, is named after state the handler writes,
+        // and is unpinned — fires on `vault_token` and turned this case into a
+        // hit. A "guaranteed miss" that rests on no detector existing is a
+        // test waiting to break; this one rests on the fixture's own code.
+        case("miss", "initialize", "missing-signer"),
         case("absent", "withdraw", "missing-signer"),
     );
 
@@ -92,7 +102,7 @@ fn scoring_separates_hits_misses_and_cases_that_were_never_analyzed() {
 
     assert!(stdout.starts_with("CAVEAT"), "{stdout}");
     assert!(stdout.contains("| `hit` | `missing-signer` | hit |"), "{stdout}");
-    assert!(stdout.contains("| `miss` | `removed-guard` | miss |"), "{stdout}");
+    assert!(stdout.contains("| `miss` | `missing-signer` | miss |"), "{stdout}");
     assert!(stdout.contains("not scored: no checkout"), "{stdout}");
     // One hit out of the two that were analyzed. The unavailable case is out
     // of the denominator, so this is 1/2 rather than 1/3.

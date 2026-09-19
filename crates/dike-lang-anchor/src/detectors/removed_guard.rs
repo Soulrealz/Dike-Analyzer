@@ -1,4 +1,5 @@
 use super::{looks_like_authority, Detector, REMOVED_GUARD};
+use crate::detectors::owner::pinned_by_sibling;
 use crate::ir::{AccountDecl, AccountsStruct, Constraint, Handler, Program, Wrapper};
 use dike_core::finding::{Finding, Severity};
 
@@ -30,6 +31,27 @@ use dike_core::finding::{Finding, Severity};
 /// already covers them and would otherwise report the same defect twice. This
 /// detector is the same idea for the fields that are not authorities —
 /// `user`, `maker`, `resolver`, `mint` — where nothing was watching at all.
+///
+/// A second shape, added 2026-09-19. The `constraint`s programs write are not
+/// all name-to-name bindings: `vault_token_account.owner == vault.key()` ties a
+/// token account to the PDA that accounts for its balance, and no account is
+/// called `owner`, so the rule above cannot see it. Its absence is still
+/// structural — the handler credits `vault.amount` on the strength of a
+/// transfer into an account whose identity nothing fixes.
+///
+/// So the second rule is: the account reaches a value-moving CPI in this
+/// handler's body (`HandlerBody::reaches_value_sink`), it is named after an
+/// account this handler state-writes, and nothing pins its identity.
+///
+/// **The name condition carries more of the discrimination than the dataflow
+/// does**, and the evidence string says so. An unpinned account reaching a
+/// transfer is the ordinary case: the counterparty's own token account is
+/// exactly that, and the token program enforces that the signing authority
+/// owns it. What is different about the program's own side is that state is
+/// written on the strength of the transfer, and the name is the only handle
+/// this slice has on that relationship. A program that names its vault token
+/// account `treasury` while writing state to `vault` is a known false
+/// negative, recorded in `docs/PROJECT_CONTEXT.md`.
 pub struct RemovedGuardDetector;
 
 impl Detector for RemovedGuardDetector {
@@ -53,6 +75,32 @@ impl Detector for RemovedGuardDetector {
             // same reasoning `missing-authority-binding` applies to `init`.
             if decl.constraints.iter().any(|c| matches!(c, Constraint::Init)) {
                 continue;
+            }
+            if let Some(state) = named_after_written_state(handler, decl) {
+                if handler.body.reaches_value_sink.contains(&decl.name)
+                    && !identity_is_pinned(accounts, decl)
+                {
+                    let line = if decl.attr_line != 0 { decl.attr_line } else { decl.line };
+                    out.push(super::finding_at(
+                        self,
+                        handler,
+                        &accounts.file,
+                        &decl.name,
+                        line,
+                        format!(
+                            "`{0}` receives or sends value in this handler, and it is \
+                             named after `{1}`, whose state this handler writes — so \
+                             `{1}` is credited on the strength of a transfer through \
+                             `{0}`. Nothing fixes which account `{0}` is: no `seeds`, \
+                             no `address`, no `has_one`, and no constraint naming it. \
+                             A caller may substitute a different token account while \
+                             `{1}` is updated as though the transfer had landed. Note \
+                             that the tie between `{0}` and `{1}` is inferred from the \
+                             name, not proven; confirm it before acting.",
+                            decl.name, state
+                        ),
+                    ));
+                }
             }
             for field in bindable_fields(program, decl) {
                 // Both halves of the binding must be present for its absence
@@ -137,6 +185,77 @@ fn binding_exists(accounts: &AccountsStruct, owner: &AccountDecl, field: &str) -
                 compact(text).contains(&qualified)
             }
             _ => false,
+        })
+    })
+}
+
+/// The account this handler state-writes that `decl` appears to be named
+/// after: `vault` for `vault_token_account`, `vault` for `vault_token`.
+///
+/// The suffix must be non-empty. `vault` itself reaches value sinks as the CPI
+/// `authority`, and the account that holds the state is not the account the
+/// state accounts for — an empty suffix would report the state account against
+/// itself.
+///
+/// A name heuristic, and the honest limit of this slice: the real relationship
+/// is "this token account holds the balance `{state}` accounts for", which the
+/// constraint `StripConstraint` deletes expressed directly and nothing here
+/// recovers in general.
+fn named_after_written_state(handler: &Handler, decl: &AccountDecl) -> Option<String> {
+    handler
+        .body
+        .state_writes
+        .iter()
+        .map(|w| &w.account)
+        // Longest match wins, so `vault_config_token` prefers `vault_config`
+        // over `vault` when the handler writes both. `max_by_key` on the length
+        // alone would let two equally long candidates resolve by iteration
+        // order, so the name breaks the tie (Rule 5).
+        .filter(|a| decl.name.len() > a.len() && decl.name.starts_with(a.as_str()))
+        .max_by_key(|a| (a.len(), a.as_str()))
+        .cloned()
+}
+
+/// Whether anything in this accounts struct fixes which account `decl` is.
+///
+/// Five spellings, all idiomatic. `seeds` derives the address; `address =` and
+/// `owner =` pin it outright; a `has_one` ties it to stored data; any
+/// constraint anywhere in the struct that *names* this account is doing so in
+/// order to constrain it — the spelling the clean `vault` fixture uses, where
+/// `constraint = vault_token_account.owner == vault.key()` is declared on the
+/// sibling `vault`; and `pinned_by_sibling` covers a sibling deriving from
+/// `{name}.key()`.
+///
+/// `pinned_by_sibling` is reused rather than reimplemented: its doc comment
+/// records three adjudicated false positives, including why `init` siblings
+/// are excluded.
+fn identity_is_pinned(accounts: &AccountsStruct, decl: &AccountDecl) -> bool {
+    decl.has_seeds()
+        || decl.is_address_pinned()
+        || !decl.has_one_targets().is_empty()
+        || named_in_any_constraint(accounts, &decl.name)
+        || pinned_by_sibling(accounts, &decl.name)
+}
+
+/// Whether any constraint in the struct mentions `name` as a whole identifier.
+///
+/// Whole-identifier, not substring: `vault` is a substring of
+/// `vault_token_account`, so a substring test would let a constraint about the
+/// token account silence a finding about the vault and the other way round.
+fn named_in_any_constraint(accounts: &AccountsStruct, name: &str) -> bool {
+    accounts.decls.iter().any(|d| {
+        d.constraints.iter().any(|c| {
+            let text = match c {
+                Constraint::Raw(t)
+                | Constraint::Address(t)
+                | Constraint::Owner(t)
+                | Constraint::Seeds(t)
+                | Constraint::Close(t) => t.as_str(),
+                Constraint::Bump(Some(t)) => t.as_str(),
+                _ => return false,
+            };
+            text.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                .any(|tok| tok == name)
         })
     })
 }
@@ -272,6 +391,178 @@ mod tests {
     #[test]
     fn is_deterministic_across_runs() {
         let src = PAIR.replace("ATTR", "mut");
+        assert_eq!(findings_for(&src), findings_for(&src));
+    }
+
+    /// `SINK` is the handler body, `ATTR` is what `vault_token` declares and
+    /// `VATTR` is what `vault` declares. Three placeholders rather than a
+    /// `str::replace` on a whole line: the pin this rule must respect is
+    /// declared on the *sibling*, so tests need to vary both attributes, and
+    /// matching a multi-line slice by its exact indentation is a test that
+    /// breaks on a reformat.
+    ///
+    /// The shape is `tests/fixtures/programs/leaky_vault`'s `deposit`: the
+    /// vault's own token account is the destination of a transfer,
+    /// `vault.amount` is credited on the strength of it, and nothing says
+    /// which token account it is.
+    const SINK_PAIR: &str = r#"
+        #[program]
+        pub mod leaky {
+            pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+                let vault = &mut ctx.accounts.vault;
+                vault.amount = vault.amount + amount;
+                SINK
+                Ok(())
+            }
+        }
+        #[account]
+        pub struct Vault { pub amount: u64, pub bump: u8 }
+        #[derive(Accounts)]
+        pub struct Deposit<'info> {
+            #[account(VATTR)]
+            pub vault: Account<'info, Vault>,
+            #[account(ATTR)]
+            pub vault_token: Account<'info, TokenAccount>,
+            #[account(mut)]
+            pub depositor_token: Account<'info, TokenAccount>,
+            pub depositor: Signer<'info>,
+            pub token_program: Program<'info, Token>,
+        }
+    "#;
+
+    const TRANSFER: &str = r#"
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.depositor_token.to_account_info(),
+            to: ctx.accounts.vault_token.to_account_info(),
+            authority: ctx.accounts.depositor.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+    "#;
+
+    /// `VATTR` is substituted first: `"ATTR"` is a substring of `"VATTR"`, so
+    /// replacing `ATTR` first would corrupt the sibling's placeholder into
+    /// `V<attr>`.
+    fn sink_pair_with(vattr: &str, attr: &str, sink: &str) -> String {
+        SINK_PAIR
+            .replace("VATTR", vattr)
+            .replace("ATTR", attr)
+            .replace("SINK", sink)
+    }
+
+    fn sink_pair(attr: &str, sink: &str) -> String {
+        sink_pair_with("mut", attr, sink)
+    }
+
+    /// The defect this rule exists for. `vault_token` reaches a transfer, is
+    /// named after `vault` — whose state this handler writes — and nothing
+    /// pins it, so a caller may substitute any token account while
+    /// `vault.amount` is credited as though the vault received the tokens.
+    #[test]
+    fn an_unpinned_account_named_after_written_state_that_reaches_a_transfer_is_a_gap() {
+        let f = findings_for(&sink_pair("mut", TRANSFER));
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert_eq!(f[0].class.as_str(), "removed-guard");
+        assert_eq!(f[0].subject.as_deref(), Some("vault_token"));
+        assert_eq!(f[0].severity, dike_core::Severity::High);
+        assert!((f[0].confidence - 0.60).abs() < 1e-6);
+    }
+
+    /// Condition 1. Same declarations, no transfer: an account nothing moves
+    /// value through is not this rule's business, whatever it is named.
+    ///
+    /// Breaks if: the dataflow condition is dropped and the rule keys on the
+    /// name alone.
+    #[test]
+    fn an_account_that_reaches_no_sink_is_not_reported() {
+        let f = findings_for(&sink_pair("mut", ""));
+        assert!(f.is_empty(), "{f:#?}");
+    }
+
+    /// Condition 2, the clean-fixture half. `depositor_token` reaches the same
+    /// transfer and nothing pins it either — and it is correct code. It is the
+    /// depositor's own account, and the token program enforces that the
+    /// signing authority owns it. An unpinned account reaching a transfer is
+    /// the ordinary case, not a defect; only `vault_token` is reported.
+    ///
+    /// Breaks if: the "named after state this handler writes" condition is
+    /// dropped. That framing was tried and rejected — see the design's §7.2.
+    #[test]
+    fn a_counterparty_account_reaching_the_same_transfer_is_not_reported() {
+        let f = findings_for(&sink_pair("mut", TRANSFER));
+        assert!(!f.iter().any(|x| x.subject.as_deref() == Some("depositor_token")), "{f:#?}");
+    }
+
+    /// Condition 2, the boundary. `vault` itself reaches sinks as the CPI
+    /// `authority` and is trivially "named after" itself, but the account
+    /// holding the state is not the account the state accounts for. The suffix
+    /// must be non-empty.
+    ///
+    /// Breaks if: the name test becomes `starts_with` with no length check.
+    #[test]
+    fn the_state_account_itself_is_not_reported_as_its_own_token_account() {
+        let sink = r#"
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.vault_token.to_account_info(),
+                to: ctx.accounts.depositor_token.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+            };
+            token::transfer(CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts), amount)?;
+        "#;
+        let f = findings_for(&sink_pair("mut", sink));
+        assert!(!f.iter().any(|x| x.subject.as_deref() == Some("vault")), "{f:#?}");
+        assert!(f.iter().any(|x| x.subject.as_deref() == Some("vault_token")), "{f:#?}");
+    }
+
+    /// Condition 3, the spelling the clean `vault` fixture actually uses
+    /// (`vault/src/lib.rs:91`): a constraint on the *sibling* that names this
+    /// account. That is the site `StripConstraint` deletes, so this test and
+    /// the positive one above are the two halves of the mutation the rule now
+    /// has to catch.
+    #[test]
+    fn a_sibling_constraint_naming_the_account_is_the_pin() {
+        let src = sink_pair_with(
+            "mut, constraint = vault_token.owner == vault.key() @ E::Wrong",
+            "mut",
+            TRANSFER,
+        );
+        let f = findings_for(&src);
+        assert!(!f.iter().any(|x| x.subject.as_deref() == Some("vault_token")), "{f:#?}");
+    }
+
+    /// Condition 3, the other idiomatic spellings. Seeds derive the address
+    /// and `address =` pins it outright: either makes substitution impossible.
+    #[test]
+    fn seeds_or_an_address_pin_the_account() {
+        let seeded = findings_for(&sink_pair(
+            "mut, seeds = [b\"vt\", vault.key().as_ref()], bump",
+            TRANSFER,
+        ));
+        assert!(!seeded.iter().any(|x| x.subject.as_deref() == Some("vault_token")), "{seeded:#?}");
+
+        let pinned = findings_for(&sink_pair("mut, address = vault.token_account", TRANSFER));
+        assert!(!pinned.iter().any(|x| x.subject.as_deref() == Some("vault_token")), "{pinned:#?}");
+    }
+
+    /// The evidence must not claim more than the rule knows. Condition 2 is a
+    /// name heuristic and it carries more of the discrimination than the
+    /// dataflow does; a reader who takes the evidence at face value must not
+    /// come away believing the tool proved a relationship it inferred from a
+    /// prefix.
+    ///
+    /// Breaks if: the evidence is rewritten to assert the account "must" be
+    /// bound, or drops the name rationale.
+    #[test]
+    fn the_evidence_names_the_heuristic_rather_than_claiming_proof() {
+        let f = findings_for(&sink_pair("mut", TRANSFER));
+        let e = &f[0].evidence;
+        assert!(e.contains("named after"), "{e}");
+        assert!(e.contains("`vault_token`") && e.contains("`vault`"), "{e}");
+    }
+
+    #[test]
+    fn the_value_sink_rule_is_deterministic_across_runs() {
+        let src = sink_pair("mut", TRANSFER);
         assert_eq!(findings_for(&src), findings_for(&src));
     }
 }

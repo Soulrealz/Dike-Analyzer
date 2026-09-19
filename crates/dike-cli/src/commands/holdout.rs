@@ -218,14 +218,18 @@ pub fn holdout(opts: HoldoutOptions) -> anyhow::Result<()> {
 /// Say so, before the run is spent, when the set contains cases no detector in
 /// the track being run can report.
 ///
-/// Measured 2026-09-12 against the six populated cases: four are
-/// `removed-guard`, which is Track-2-only by design because the absence
-/// of an arbitrary expression is not a structural signal. A Track 1 pass over
-/// this set therefore misses those four before it reads a line of code, and
-/// the resulting recall would describe the class vocabulary rather than the
-/// detectors. Warned rather than refused: a deliberate Track 1 number over the
-/// cases Track 1 can reach is a legitimate thing to want, as long as nobody
-/// quotes it as the tool's holdout recall.
+/// Measured 2026-09-12 against the six populated cases: four were
+/// `removed-guard`, which was then Track-2-only, so a Track 1 pass missed all
+/// four before it read a line of code and the resulting recall described the
+/// class vocabulary rather than the detectors. **That is no longer true of any
+/// class in the tool's own vocabulary** — `removed-guard` gained a Track 1
+/// detector on 2026-09-19 — so this warning no longer fires on the real
+/// holdout. It still guards a case labelled with a class no detector reports
+/// at all, which can only ever score as a miss.
+///
+/// Warned rather than refused: a deliberate Track 1 number over the cases
+/// Track 1 can reach is a legitimate thing to want, as long as nobody quotes
+/// it as the tool's holdout recall.
 fn unreachable_class_warning(cases: &[HoldoutCase]) -> Option<String> {
     let reachable: Vec<&str> = dike_lang_anchor::detectors::all_detectors()
         .iter()

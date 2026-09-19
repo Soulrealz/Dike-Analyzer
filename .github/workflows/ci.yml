@@ -109,10 +109,16 @@ jobs:
               "missing-authority-binding",
               "pda-validation-gap",
               "unchecked-arithmetic",
+              # 7 results / 5 rules -> 8 / 6 on 2026-09-19: `removed-guard`
+              # gained a rule for an account that moves value, is named after
+              # state the handler writes, and is unpinned. `vault_token` is
+              # that account in both `deposit` and `withdraw`, and
+              # `collapse_by_subject` folds them into one row.
+              "removed-guard",
           }
           assert ids == expected, f"got {sorted(ids)}"
-          assert len(run["results"]) == 7, len(run["results"])
-          assert len(run["tool"]["driver"]["rules"]) == 5
+          assert len(run["results"]) == 8, len(run["results"])
+          assert len(run["tool"]["driver"]["rules"]) == 6
           for r in run["results"]:
               physical = r["locations"][0]["physicalLocation"]
               uri = physical["artifactLocation"]["uri"]
