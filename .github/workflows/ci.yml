@@ -114,8 +114,19 @@ jobs:
           assert len(run["results"]) == 7, len(run["results"])
           assert len(run["tool"]["driver"]["rules"]) == 5
           for r in run["results"]:
-              uri = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+              physical = r["locations"][0]["physicalLocation"]
+              uri = physical["artifactLocation"]["uri"]
               assert not uri.startswith("/"), uri
+              # A startLine of 0 is schema-invalid, and upload-sarif validates
+              # before ingesting: one bad line would reject the whole document
+              # and discard every other finding in the run.
+              region = physical.get("region")
+              assert region is None or region["startLine"] >= 1, region
+              # An empty fingerprint is not a missing one. Two results of a
+              # rule sharing "" are one alert to code scanning, so the second
+              # disappears — the key is omitted instead.
+              fingerprints = r.get("partialFingerprints", {})
+              assert fingerprints.get("dikeFindingId/v1") != "", r["ruleId"]
           print(f"ok: {len(run['results'])} results, {len(run['tool']['driver']['rules'])} rules")
           EOF
 
