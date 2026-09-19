@@ -81,6 +81,73 @@
 # presentation-only. Decide that BEFORE the one scored run: `runs.json`
 # refuses a second.
 
+# ---------------------------------------------------------------------------
+# SEAM SEARCH, 2026-09-19. Six cases still. Nothing was added, and that is the
+# result, not a failure to finish.
+#
+# `next_steps_6.md` listed three untried seams. All three were tried, plus two
+# more. Every row below was checked against the live source, not recalled:
+#
+#   Sherlock contests          Still exactly two Solana contests in the org
+#                              (`gh api search/repositories org:sherlock-audit`),
+#                              and both are already mined below. Searches for
+#                              `anchor` and `svm` in that org return nothing.
+#
+#   Code4rena                  `2025-08-solana-foundation` postdates the note
+#                              in next_steps_6 and looked promising. Its scope
+#                              is `agave`, `token-2022` and `zk-elgamal-proof`
+#                              — all NATIVE Rust. Zero handlers, so every case
+#                              would score an automatic miss.
+#
+#   GitHub Security Advisories Two Rust advisories mention Anchor
+#                              (GHSA-429q-fhh4-r6hj, GHSA-c6rc-8jpp-2fgc) and
+#                              both are bugs in the `anchor-lang` LIBRARY, not
+#                              in any program's handler. No `#[program]`
+#                              module, nothing for a handler-granularity
+#                              scorer to compare.
+#
+#   Zellic publications        Eight Solana reports in `Zellic/publications`;
+#                              five opened. Drift Protocol: the audited repo
+#                              `drift-labs/protocol-v1` 404s, so the commit
+#                              cannot be resolved — the Jet Protocol failure
+#                              again. Chainflip: `chainflip-io/chainflip-sol-
+#                              contracts` 404s. LayerZero Endpoint: audited
+#                              `LayerZero-Labs/monorepo`, private. Pyth Lazer:
+#                              repo and commit BOTH resolve, and the findings
+#                              are still unusable — a calldata-offset parsing
+#                              bug and a re-runnable migration, neither of
+#                              which is one of the six classes. Audius: commit
+#                              resolves and the Critical finding is textbook
+#                              `pda-validation-gap` ("the transfer PDA is not
+#                              checked to be the intended PDA") — but
+#                              `audius-reward-manager` depends on
+#                              `solana-program`, not `anchor-lang`. Native
+#                              again.
+#
+#   OtterSec                   One published report repo, `otter-sec/cega-
+#                              vault-report`. Its target `cega-fi/cega-vault`
+#                              404s.
+#
+#   Neodyme                    No public report repository found.
+#
+# THE BINDING CONSTRAINT IS NOT REPO ROT — IT IS VOCABULARY FIT. Pyth is the
+# case that shows it: everything a holdout case needs was resolvable, and the
+# findings still did not belong, because most published Solana findings are
+# economic, arithmetic-semantic or deserialization bugs rather than the six
+# structural classes Track 1 detects. Repo rot filters out perhaps half the
+# candidates; vocabulary filters most of what survives. A seam that reliably
+# produces Anchor programs is not enough on its own — it has to produce
+# Anchor programs whose PUBLISHED findings are structural.
+#
+# One lead not pursued, recorded rather than acted on: the "Solana Audit
+# Arena" publishes a weekly Anchor program with findings filed as GitHub
+# issues. Those programs are GENERATED for the exercise, not deployed code
+# with a real disclosure, so they are a second sealevel-attacks — external
+# ground truth nobody here wrote — and not holdout material. If someone wants
+# a second discrimination benchmark rather than a bigger holdout, start there.
+#
+# ---------------------------------------------------------------------------
+
 [[case]]
 id       = "cashio-print-cash-unvalidated-crate-mint"
 repo     = "https://github.com/cashioapp/cashio"
