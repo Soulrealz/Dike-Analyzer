@@ -22,6 +22,12 @@
 /corpus/index
 /corpus/.sources.toml.tmp.*
 
+# ---- External benchmark checkouts ---------------------------------------
+# `coral-xyz/sealevel-attacks` and anything like it: other people's
+# repositories, cloned to score against. The scorecard is committed
+# (benchmarks/adjudication/), the code is not.
+/benchmarks/external
+
 # ---- Holdout checkouts ---------------------------------------------------
 # Other people's repositories at other people's commits, cloned so the holdout
 # can be scored against real code. Vendoring them here would redistribute code

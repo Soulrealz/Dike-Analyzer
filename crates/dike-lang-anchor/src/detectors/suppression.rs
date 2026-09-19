@@ -435,6 +435,25 @@ pub fn apply(
                     let needle = format!("{}.is_signer", name);
                     contains_anchored(&compact, &needle)
                 } else if class == MISSING_OWNER_CHECK || class == MISSING_AUTHORITY_BINDING {
+                    // Comparing the account's `owner` is the check this class
+                    // is named after, and only `X.key()` was recognised until
+                    // 2026-09-19. The Anchor authors' own reference set fixes
+                    // two of its categories with exactly this line.
+                    //
+                    // Qualified with `accounts.` on purpose. A bare `X.owner`
+                    // is just as often a field of a *deserialized struct* that
+                    // happens to share the account's name — in
+                    // `sealevel-attacks/1-account-data-matching/secure`,
+                    // `&token.owner` reads the unpacked SPL account's owner
+                    // field and says nothing about who owns the account, which
+                    // that program genuinely never checks. Matching the bare
+                    // form would delete a true positive.
+                    if class == MISSING_OWNER_CHECK {
+                        let owner_needle = format!("accounts.{}.owner", name);
+                        if contains_anchored(&compact, &owner_needle) {
+                            return true;
+                        }
+                    }
                     let key_needle = format!("{}.key()", name);
                     if contains_anchored(&compact, &key_needle) {
                         return true;
@@ -510,6 +529,72 @@ mod tests {
             .flat_map(|d| d.run(&out.program, handler, &accounts))
             .collect();
         apply(findings, handler, &accounts)
+    }
+
+    /// An owner comparison on the account itself is the check that
+    /// `missing-owner-check` is named after, and it was not recognised:
+    /// suppression accepted only `X.key()`.
+    ///
+    /// Measured 2026-09-19 over `coral-xyz/sealevel-attacks`, the Anchor
+    /// authors' reference set. Its `2-owner-checks` and `3-type-cosplay`
+    /// secure variants fix the bug with exactly this line and dike reported
+    /// them identically to the insecure ones.
+    #[test]
+    fn an_owner_comparison_on_the_account_suppresses_missing_owner_check() {
+        let (kept, dropped) = findings_and_suppressions_for(r#"
+            #[program]
+            pub mod p {
+                pub fn log_message(ctx: Context<LogMessage>) -> ProgramResult {
+                    if ctx.accounts.token.owner != ctx.program_id {
+                        return Err(ProgramError::IllegalOwner);
+                    }
+                    Ok(())
+                }
+            }
+            #[derive(Accounts)]
+            pub struct LogMessage<'info> {
+                token: AccountInfo<'info>,
+                authority: Signer<'info>,
+            }
+        "#);
+        assert!(
+            !kept.iter().any(|f| f.class.as_str() == "missing-owner-check"),
+            "{kept:#?}"
+        );
+        assert!(dropped.iter().any(|s| s.finding.class.as_str() == "missing-owner-check"));
+    }
+
+    /// The trap, and why the rule requires the qualified `accounts.X.owner`.
+    ///
+    /// `sealevel-attacks/1-account-data-matching/secure` reads
+    /// `if ctx.accounts.authority.key != &token.owner`, where `token` is a
+    /// *deserialized struct*, not the account. Its `owner` field says nothing
+    /// about who owns the account, and that program genuinely still lacks an
+    /// owner check — its `recommended` variant is the one that adds a typed
+    /// account. Matching a bare `token.owner` would delete a true positive.
+    #[test]
+    fn a_deserialized_structs_owner_field_does_not_suppress() {
+        let (kept, _) = findings_and_suppressions_for(r#"
+            #[program]
+            pub mod p {
+                pub fn log_message(ctx: Context<LogMessage>) -> ProgramResult {
+                    let token = SplTokenAccount::unpack(&ctx.accounts.token.data.borrow())?;
+                    if ctx.accounts.authority.key != &token.owner {
+                        return Err(ProgramError::InvalidAccountData);
+                    }
+                    Ok(())
+                }
+            }
+            #[derive(Accounts)]
+            pub struct LogMessage<'info> {
+                token: AccountInfo<'info>,
+                authority: Signer<'info>,
+            }
+        "#);
+        assert!(
+            kept.iter().any(|f| f.class.as_str() == "missing-owner-check"),
+            "the account's owner is still unchecked: {kept:#?}"
+        );
     }
 
     /// RENAMED and REWRITTEN when Defect B below was found. The old name

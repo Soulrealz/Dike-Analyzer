@@ -60,6 +60,7 @@ impl Detector for PdaValidationGapDetector {
                 out.push(super::finding_at(
                     self,
                     handler,
+                    &accounts.file,
                     &d.name,
                     line,
                     format!(
@@ -94,6 +95,7 @@ impl Detector for PdaValidationGapDetector {
             out.push(super::finding_at(
                 self,
                 handler,
+                &accounts.file,
                 &d.name,
                 line,
                 format!(

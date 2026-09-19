@@ -39,7 +39,7 @@ impl Detector for UncheckedArithmeticDetector {
         // that compares runs over time. Findings still merge on
         // `(handler_id, class)`, never on `id` (see
         // `dike_core::Finding::merge_key`), so this is safe.
-        let mut finding = super::finding_at(self, handler, "arithmetic", unchecked[0], evidence);
+        let mut finding = super::finding_at(self, handler, &handler.file, "arithmetic", unchecked[0], evidence);
         // No subject. `"arithmetic"` is a constant key, not an anchor: every
         // handler's arithmetic finding would carry the identical subject, and
         // `merge::collapse_by_subject` would fold two genuinely different

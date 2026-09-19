@@ -130,6 +130,13 @@ finding on any multi-file program hard to act on.
 This is already recorded as a quirk, but its consequence on real code was not:
 every finding in this adjudication needed a manual search to locate.
 
+**Fixed the same day.** `finding_at` now takes the file the line belongs to,
+and `Location::handler_id` drops the file entirely — the two tracks disagree
+about a finding's file and both are right, so carrying the path in the identity
+key meant they could never corroborate in a multi-file program. Verified on a
+mutant of the multi-file fixture: the finding lands on the `#[account(` line of
+the declaration rather than an unrelated line of `lib.rs`.
+
 ## Follow-up, same day: cause A fixed
 
 Root cause A was fixed in the two detectors that carried it. Both now ask

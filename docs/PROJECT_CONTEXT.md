@@ -650,6 +650,33 @@ real constraint. Ordinary choices need no justification.
   Raising this number means teaching the analyzer about external account types,
   not writing more rules.
 
+- **Guards written as plain Rust were invisible to the suppression pass, and
+  an owner comparison did not count as an owner check (both fixed
+  2026-09-19).** Found by scoring against `coral-xyz/sealevel-attacks`, the
+  Anchor authors' reference set of 35 programs in insecure/secure/recommended
+  triples — the first ground truth this project has that nobody here wrote.
+
+  On the first run, **six of its eleven categories reported identically on the
+  insecure and the secure variant**: a rule firing on something both versions
+  share is not detection. Two causes. `parser/body.rs` recorded an
+  `ImperativeCheck` only from macro calls, so
+  `if !ctx.accounts.authority.is_signer { return Err(..) }` — the canonical fix
+  in that set — was never seen; `CheckKind::ManualIf` had been in the IR from
+  the start with nothing producing it. And suppression accepted only `X.key()`
+  for `missing-owner-check`, so `ctx.accounts.token.owner != ctx.program_id`,
+  the check the class is named after, did not suppress it.
+
+  The owner needle is the qualified `accounts.X.owner`. A bare `X.owner` is as
+  often a field of a deserialized struct sharing the account's name, and in
+  `1-account-data-matching/secure` that struct's field is all there is — that
+  program genuinely still lacks an owner check, so the bare form would have
+  deleted a true positive.
+
+  Dike now discriminates in 3 of 11 categories. Full scorecard and the honest
+  gaps in `benchmarks/adjudication/2026-09-19-sealevel-attacks.md`. **Track 2
+  must never be scored against this set**: `corpus/cache/` holds its prose, so
+  the retriever would hand the model the answer key.
+
 - **A mutant that is still secure is not a vulnerable program either.**
   `strip_has_one` removed a `has_one = X` from accounts whose own `seeds`
   already derive from `X`. Stripping it injects nothing: the PDA still only
@@ -675,7 +702,7 @@ real constraint. Ordinary choices need no justification.
   by reverting them, not assumed. Pinned by
   `end_to_end::the_escrow_fixture_is_clean`.
 
-  Case counts went 19 → 32 and the noise-floor denominator 166 → 417 LOC.
+  Case counts went 19 → 33 and the noise-floor denominator 166 → 470 LOC.
 
 - **Precision on real programs is 0.000 (0/4), measured 2026-09-19.** Every
   Track 1 finding on all 7,211 LOC of real Anchor code available was read at the
@@ -713,14 +740,31 @@ real constraint. Ordinary choices need no justification.
   conservative, and the conservatism is measured against the wrong unit — one
   declaration rather than one accounts struct.
 
-- **A finding's `file:line` does not point at the finding, on any program whose
-  handlers delegate.** `Location::file` is the handler's file, so in a
-  module-per-instruction layout it is `lib.rs` for everything, while
-  `Location::line` comes from the declaration in a different file. Measured on
-  polyclone: a finding reported at `src/lib.rs:13` (`pub use message::*;`) whose
-  declaration is at `src/instructions/refund.rs:13`. Every finding in the
-  2026-09-19 adjudication had to be located by hand. The file half of the pair
-  is the wrong one to keep.
+- **A finding points at the file its declaration is in, and identity no longer
+  carries a file at all (fixed 2026-09-19).** `Location::file` used to be the
+  *handler's* file, so in a module-per-instruction layout it was `lib.rs` for
+  everything while `Location::line` came from a declaration in a different
+  file. Measured on polyclone: a finding reported at `src/lib.rs:13`
+  (`pub use message::*;`) whose declaration is at
+  `src/instructions/refund.rs:13`. Every finding in that day's adjudication had
+  to be located by hand.
+
+  `finding_at` now takes the file the line belongs to — the accounts struct's,
+  for an account-declaration finding, because that is the code someone edits.
+  `unchecked-arithmetic` keeps the handler's file, which is where its evidence
+  actually is.
+
+  That forced the second half: `Location::handler_id` **drops the file**, and
+  so does `MutationLabel::handler_id`. The two tracks disagree about a
+  finding's file and both are right — Track 1 points at the accounts struct,
+  Track 2 at the handler it reviewed — so a key carrying the path meant the
+  tracks could never corroborate each other in a program that puts one
+  instruction per module. A handler name is unique within a program, so the
+  file added nothing to identity and took away matching. `eval::differential`
+  had already reached the same conclusion for its own key, for the same
+  reason. Pinned by
+  `finding::tests::identity_is_the_handler_not_the_file_it_was_reported_from`
+  and `end_to_end::a_finding_points_at_the_file_its_declaration_is_in`.
 
 - **The differential harness compared findings across tracks, so one track's
   false positive erased the other's detection (found 2026-09-15).** `diff_runs`

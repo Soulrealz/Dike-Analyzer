@@ -34,6 +34,7 @@ impl Detector for MissingOwnerCheckDetector {
                 finding_from(
                     self,
                     handler,
+                    accounts,
                     d,
                     format!(
                         "`{}` is declared `{:?}` — Anchor performs no owner check and no \

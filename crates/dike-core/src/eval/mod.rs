@@ -55,9 +55,10 @@ pub struct MutationLabel {
 
 impl MutationLabel {
     /// The same key `Location::handler_id` produces, so a label and a finding
-    /// can be matched without either side knowing the other's type.
+    /// can be matched without either side knowing the other's type. The file
+    /// is not part of it, for the reasons given there.
     pub fn handler_id(&self) -> String {
-        format!("{}::{}", self.file.display(), self.handler)
+        self.handler.clone()
     }
 }
 

@@ -37,7 +37,7 @@ just eval-static     # no model, no network — the mode CI runs
 | `unchecked-arithmetic`      | static |  1.000 |        2 |     2 |     1.000 |
 ```
 
-Scored over two clean programs, 27 mutants, at a noise floor of zero.
+Scored over two clean programs, 33 mutants, at a noise floor of zero.
 `removed-guard`'s 0.200 is the mutants rather than the detector — two of its
 five cases guard a field on an `anchor_spl` type the analyzer has no
 definition for, one is a business rule nothing structural implies, and one is

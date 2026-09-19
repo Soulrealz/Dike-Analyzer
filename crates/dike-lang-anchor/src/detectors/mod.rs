@@ -45,14 +45,21 @@ pub fn all_detectors() -> Vec<Box<dyn Detector>> {
 /// subject within the handler — an account name for account-oriented detectors,
 /// a fixed class token for body-oriented ones — and it is what keeps two findings
 /// of the same class in the same handler distinct.
+/// `file` is the file `line` is in, which is not always the handler's. An
+/// account-declaration finding points into the accounts struct's module,
+/// because that is the code someone has to edit. Getting this wrong produced
+/// findings pointing at unrelated lines in every delegating program
+/// (measured 2026-09-19, `benchmarks/adjudication/`).
 pub fn finding_at(
     detector: &dyn Detector,
     handler: &Handler,
+    file: &std::path::Path,
     key: &str,
     line: u32,
     evidence: String,
 ) -> Finding {
-    let location = Location { file: handler.file.clone(), line, handler: handler.name.clone() };
+    let location =
+        Location { file: file.to_path_buf(), line, handler: handler.name.clone() };
     let id = {
         let seed = format!("{}|{}|{}", location.handler_id(), detector.class(), key);
         blake3::hash(seed.as_bytes()).to_hex()[..16].to_string()
@@ -82,10 +89,11 @@ pub fn finding_at(
 pub fn finding_from(
     detector: &dyn Detector,
     handler: &Handler,
+    accounts: &AccountsStruct,
     decl: &AccountDecl,
     evidence: String,
 ) -> Finding {
-    finding_at(detector, handler, &decl.name, decl.line, evidence)
+    finding_at(detector, handler, &accounts.file, &decl.name, decl.line, evidence)
 }
 
 /// Account names that conventionally denote a privileged party.

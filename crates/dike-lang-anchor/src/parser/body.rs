@@ -166,6 +166,41 @@ impl<'ast> Visit<'ast> for BodyVisitor {
         visit::visit_macro(self, node);
     }
 
+    /// A guard written as plain Rust rather than as an Anchor macro.
+    ///
+    /// `if !ctx.accounts.authority.is_signer { return Err(...) }` is the same
+    /// assertion as `require!(ctx.accounts.authority.is_signer, ...)`, and it
+    /// is how the Anchor authors' own reference set writes its fixes. Only
+    /// macro calls were recorded as checks until 2026-09-19, so the
+    /// suppression pass could not see any of them: measured over
+    /// `coral-xyz/sealevel-attacks`, dike reported identical findings on the
+    /// `insecure` and `secure` variants of six categories out of eleven.
+    ///
+    /// Only an `if` whose taken branch *rejects* counts. A branch that merely
+    /// does something is not a guard, and treating it as one would let any
+    /// mention of an account silence a finding about it — the dangerous
+    /// direction for the one pass that deletes findings.
+    ///
+    /// The condition's text is recorded as written, negation included. The
+    /// suppression pass matches on substrings such as `X.is_signer` and
+    /// `X.key()` rather than evaluating the condition, and an `if` that
+    /// rejects asserts the negation of its condition, so the two line up:
+    /// `if !x.is_signer { return Err }` asserts `x.is_signer`, exactly as
+    /// `require!(x.is_signer)` does.
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        if branch_rejects(&node.then_branch) {
+            let cond = &node.cond;
+            let tokens = quote::quote!(#cond);
+            self.body.checks.push(ImperativeCheck {
+                kind: CheckKind::ManualIf,
+                referenced_accounts: identifiers(&tokens),
+                text: tokens.to_string(),
+                line: node.span().start().line as u32,
+            });
+        }
+        visit::visit_expr_if(self, node);
+    }
+
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
         if let Some(account) = resolve_account_root(&node.left, &self.aliases) {
             self.body.state_writes.push(StateWrite {
@@ -215,6 +250,21 @@ pub fn summarize_body(f: &syn::ItemFn) -> HandlerBody {
     v.body
 }
 
+/// Whether a block rejects: returns an error, or panics.
+///
+/// Token-level on purpose. The shapes in the wild are `return Err(..)`,
+/// `return err!(..)`, `Err(..)?`, and `panic!`/`unreachable!`, and enumerating
+/// them structurally would be a longer list that still missed the next one.
+fn branch_rejects(block: &syn::Block) -> bool {
+    let text = quote::quote!(#block).to_string();
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("returnErr")
+        || compact.contains("returnerr!")
+        || compact.contains("Err(")
+        || compact.contains("panic!")
+        || compact.contains("unreachable!")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +273,78 @@ mod tests {
     fn body(src: &str) -> crate::ir::HandlerBody {
         let f: syn::ItemFn = syn::parse_str(src).unwrap();
         summarize_body(&f)
+    }
+
+    /// The canonical secure pattern from `coral-xyz/sealevel-attacks`, the
+    /// Anchor authors' own reference set:
+    ///
+    /// ```ignore
+    /// if !ctx.accounts.authority.is_signer {
+    ///     return Err(ProgramError::MissingRequiredSignature);
+    /// }
+    /// ```
+    ///
+    /// Measured 2026-09-19 over all 35 of its programs: dike reported the same
+    /// findings on the `insecure` and `secure` variants of six categories out
+    /// of eleven, because the fix is written as a plain `if` and only macro
+    /// calls were ever recorded as checks. `CheckKind::ManualIf` existed in the
+    /// IR from the start with nothing producing it.
+    #[test]
+    fn a_manual_if_that_returns_an_error_is_a_check() {
+        let b = body(r#"
+            pub fn log_message(ctx: Context<LogMessage>) -> ProgramResult {
+                if !ctx.accounts.authority.is_signer {
+                    return Err(ProgramError::MissingRequiredSignature);
+                }
+                Ok(())
+            }
+        "#);
+        let check = b
+            .checks
+            .iter()
+            .find(|c| c.kind == CheckKind::ManualIf)
+            .expect("the guard was not recorded as a check");
+        assert!(
+            check.referenced_accounts.iter().any(|a| a == "authority"),
+            "{:?}",
+            check.referenced_accounts
+        );
+        assert!(check.text.contains("is_signer"), "{}", check.text);
+        assert!(check.line > 0);
+    }
+
+    /// An `if` that does not reject is not a guard. Recording it would let any
+    /// branch mentioning an account silence a finding about that account,
+    /// which is the dangerous direction for a pass that deletes findings.
+    #[test]
+    fn a_manual_if_that_does_not_reject_is_not_a_check() {
+        let b = body(r#"
+            pub fn log_message(ctx: Context<LogMessage>) -> ProgramResult {
+                if ctx.accounts.authority.is_signer {
+                    msg!("signed");
+                }
+                Ok(())
+            }
+        "#);
+        assert!(
+            !b.checks.iter().any(|c| c.kind == CheckKind::ManualIf),
+            "{:?}",
+            b.checks
+        );
+    }
+
+    /// The other spelling of rejection, and the one older Anchor code uses.
+    #[test]
+    fn a_manual_if_that_calls_err_is_a_check() {
+        let b = body(r#"
+            pub fn settle(ctx: Context<Settle>) -> Result<()> {
+                if ctx.accounts.vault.admin != ctx.accounts.admin.key() {
+                    return err!(VaultError::Unauthorized);
+                }
+                Ok(())
+            }
+        "#);
+        assert!(b.checks.iter().any(|c| c.kind == CheckKind::ManualIf), "{:?}", b.checks);
     }
 
     #[test]

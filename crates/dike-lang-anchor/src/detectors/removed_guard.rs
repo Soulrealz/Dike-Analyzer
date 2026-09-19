@@ -68,6 +68,7 @@ impl Detector for RemovedGuardDetector {
                 out.push(super::finding_at(
                     self,
                     handler,
+                    &accounts.file,
                     &format!("{}.{}", decl.name, field),
                     line,
                     format!(

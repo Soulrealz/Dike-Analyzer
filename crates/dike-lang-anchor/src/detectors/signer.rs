@@ -29,6 +29,7 @@ impl Detector for MissingSignerDetector {
                 finding_from(
                     self,
                     handler,
+                    accounts,
                     d,
                     format!(
                         "`{}` is named as a privileged account but is declared `{:?}` with no \

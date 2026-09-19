@@ -81,6 +81,7 @@ impl Detector for MissingAuthorityBindingDetector {
                         super::finding_at(
                             self,
                             handler,
+                            &accounts.file,
                             // Account AND field: one account can store two
                             // unbound authority fields, and keying on the
                             // account alone gave them the same id and would

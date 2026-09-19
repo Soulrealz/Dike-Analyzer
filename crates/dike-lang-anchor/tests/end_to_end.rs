@@ -5,6 +5,60 @@ fn fixture() -> SourceTree {
     SourceTree::load(Path::new("../../tests/fixtures/programs/vault")).unwrap()
 }
 
+/// A finding has to point at the code you would edit to fix it.
+///
+/// Adjudicating real programs on 2026-09-19 turned up a finding reported at
+/// `polyclone/src/lib.rs:13`, which is `pub use message::*;`. The declaration
+/// was at `src/instructions/refund.rs:13`: `Location::file` was the handler's
+/// file and `Location::line` came from a declaration in a different one. Every
+/// finding in that adjudication had to be located by hand.
+///
+/// Programs that put one instruction per module are the normal case, not the
+/// exotic one, so this is the normal case being wrong.
+#[test]
+fn a_finding_points_at_the_file_its_declaration_is_in() {
+    let tree = SourceTree {
+        root: PathBuf::from("."),
+        files: vec![
+            SourceFile {
+                path: PathBuf::from("src/lib.rs"),
+                text: r#"
+                    #[program]
+                    pub mod prog {
+                        pub fn sweep(ctx: Context<Sweep>) -> Result<()> {
+                            instructions::sweep::handler(ctx)
+                        }
+                    }
+                "#
+                .into(),
+            },
+            SourceFile {
+                path: PathBuf::from("src/instructions/sweep.rs"),
+                text: r#"
+                    #[derive(Accounts)]
+                    pub struct Sweep<'info> {
+                        pub destination: UncheckedAccount<'info>,
+                        #[account(seeds = [b"vault"], bump = vault.bump)]
+                        pub vault: Account<'info, Vault>,
+                    }
+                "#
+                .into(),
+            },
+        ],
+    };
+
+    let findings = dike_lang_anchor::analyze_program(&tree).result.findings;
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    let loc = &findings[0].location;
+    assert_eq!(
+        loc.file,
+        PathBuf::from("src/instructions/sweep.rs"),
+        "the fix lives where the account is declared, not where the handler is"
+    );
+    assert_eq!(loc.handler, "sweep");
+    assert!(loc.line > 0, "a finding with no line cannot be acted on");
+}
+
 /// The second mutation source, and the regression guard for the two
 /// false-positive classes adjudicated on real code (2026-09-19).
 ///

@@ -56,8 +56,22 @@ pub struct Location {
 }
 
 impl Location {
+    /// The identity of the instruction this finding is about.
+    ///
+    /// The file is deliberately **not** part of it. A handler name identifies
+    /// an instruction uniquely within a program — Anchor turns each one into a
+    /// distinct instruction, so two of the same name cannot coexist — and
+    /// including the file actively breaks matching: `file` names where the
+    /// *fix* goes, which for an account-declaration finding is the accounts
+    /// struct's module and for a Track 2 finding is the handler's. Keying on
+    /// it meant the two tracks could never corroborate each other in any
+    /// program that puts one instruction per file, which is most of them.
+    ///
+    /// `eval::differential` reached the same conclusion independently and for
+    /// the same reason: the original and the mutant live in different
+    /// directories, so a key carrying the path matches nothing.
     pub fn handler_id(&self) -> String {
-        format!("{}::{}", self.file.display(), self.handler)
+        self.handler.clone()
     }
 }
 
@@ -166,9 +180,27 @@ mod tests {
         assert_eq!(a.merge_key(), b.merge_key());
     }
 
+    /// Identity is the handler, and deliberately not the file.
+    ///
+    /// The two tracks disagree about which file a finding belongs in, and both
+    /// are right: Track 1 points at the accounts struct, because that is what
+    /// you edit, while Track 2 points at the handler it reviewed. When the
+    /// file was part of the key they could never corroborate each other in a
+    /// program that puts one instruction per module — which is most real
+    /// programs. A handler name is unique within a program, so the file adds
+    /// nothing to identity and takes away matching.
     #[test]
-    fn handler_id_joins_file_and_handler() {
-        let f = finding("missing-signer", Severity::High, 0.8, "withdraw");
-        assert_eq!(f.location.handler_id(), "src/lib.rs::withdraw");
+    fn identity_is_the_handler_not_the_file_it_was_reported_from() {
+        let mut from_accounts_struct = finding("missing-signer", Severity::High, 0.8, "withdraw");
+        from_accounts_struct.location.file = PathBuf::from("src/instructions/withdraw.rs");
+        let mut from_the_handler = finding("missing-signer", Severity::High, 0.8, "withdraw");
+        from_the_handler.location.file = PathBuf::from("src/lib.rs");
+
+        assert_eq!(from_accounts_struct.location.handler_id(), "withdraw");
+        assert_eq!(
+            from_accounts_struct.merge_key(),
+            from_the_handler.merge_key(),
+            "the same defect on the same handler, reported from two files"
+        );
     }
 }
