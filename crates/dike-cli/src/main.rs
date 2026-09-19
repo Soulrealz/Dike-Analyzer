@@ -21,6 +21,10 @@ enum Command {
         format: Format,
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+        /// Strip this prefix from paths in SARIF output. Defaults to the
+        /// current directory, which is what a CI checkout root is.
+        #[arg(long)]
+        base_dir: Option<std::path::PathBuf>,
         #[arg(long)]
         llm: bool,
         #[arg(long, default_value = commands::corpus::DEFAULT_OLLAMA_HOST)]
@@ -194,6 +198,7 @@ fn main() -> std::process::ExitCode {
             path,
             format,
             out,
+            base_dir,
             llm,
             ollama_host,
             model,
@@ -204,6 +209,11 @@ fn main() -> std::process::ExitCode {
             root: path,
             format,
             out,
+            // Not in a `?`-friendly context (`main` returns `ExitCode`, not a
+            // `Result`): an unreadable working directory degrades to "no
+            // stripping" rather than failing the run (Rule 4).
+            base_dir: base_dir
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))),
             llm,
             ollama_host,
             model,
@@ -239,6 +249,11 @@ fn main() -> std::process::ExitCode {
                     root: std::path::PathBuf::new(),
                     format: Format::Md,
                     out: None,
+                    // Dead for this path: eval always renders Markdown, and
+                    // `base_dir` is only ever read by the SARIF renderer's
+                    // path relativization. Left populated rather than
+                    // special-cased, since nothing downstream reads it here.
+                    base_dir: std::env::current_dir().unwrap_or_default(),
                     llm: true,
                     ollama_host,
                     model,

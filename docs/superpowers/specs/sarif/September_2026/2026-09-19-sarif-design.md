@@ -146,18 +146,42 @@ the honest rendering.
 ### Fingerprints are the load-bearing detail
 
 `finding.id` is `blake3(handler_id | class | key)[..16]` — it contains no line
-number and no file path. Feeding it to GitHub as a `partialFingerprint` means an
+number and no file path, for a finding built by exactly one detector or one
+Track 2 call site. Feeding it to GitHub as a `partialFingerprint` means an
 alert stays the *same alert* when the code around it moves: no close-and-reopen
 churn on every refactor, and a dismissal survives.
 
+**This is false for a finding merged from multiple sources.**
+`merge::corroborate` and the same-track branch of `merge::merge` set
+`id: String::new()` on the combined finding, so it carries no id and therefore
+no fingerprint at all. `result_for` (`sarif.rs`) omits the `partialFingerprints`
+key entirely in that case rather than emitting the empty string — two merged
+findings sharing an empty fingerprint would otherwise fold into one GitHub
+alert, silently dropping the other. Known gap, recorded in
+`docs/PROJECT_CONTEXT.md`'s "Known gaps"; recomputing a merged id is out of
+scope here (it would move pinned output under Rule 5, and is the repo owner's
+call).
+
 If fingerprints were omitted, GitHub would fall back to hashing the surrounding
 source, and every line shift would resurrect dismissed alerts. This is the
-single highest-value property of the whole format and it is available only
-because `Location::handler_id` deliberately excludes the file.
+single highest-value property of the whole format when it is present, and it
+is available only because `Location::handler_id` deliberately excludes the
+file.
 
 The `/v1` suffix is SARIF's own convention for versioning a fingerprint scheme.
 Changing how `finding.id` is computed must bump it to `/v2`, or consumers
-silently inherit a set of alerts whose identities all changed at once.
+silently inherit a set of alerts whose identities all changed at once. Also
+note: `llm::structured::to_finding` seeds a Track 2 id with `location.line`
+(`format!("{}|{}|{}", handler_id, class, line)`), so a Track 2 finding's id —
+and hence its fingerprint — is *not* refactor-stable the way a Track 1
+finding's is. This was not changed as part of this fix wave.
+
+A repository that analyzes more than one program must also pass a distinct
+`category` per invocation: `Location::handler_id` carries no program
+component, so two programs with a handler of the same name and the same
+defect produce the same fingerprint, and GitHub matches alerts within a
+category. See the README's "In CI" section and `action.yml`'s `category`
+input.
 
 ### `properties` on a result
 
@@ -175,6 +199,15 @@ silently inherit a set of alerts whose identities all changed at once.
 `dikeSubject` and `dikeAbsorbedHandlers` are omitted when absent or empty.
 `security-severity` is a string, not a number — GitHub requires a string here
 and silently ignores a numeric value.
+
+**`security-severity` is also emitted on the rule, not only the result**
+(added in the fix wave that followed the initial nine-task build). GitHub
+reads `runs[].tool.driver.rules[].properties["security-severity"]` to drive
+the Security tab and the >=7.0 check threshold; the per-result copy above is
+an opaque property bag GitHub does not act on for that purpose. The rule's
+value is the maximum severity among findings in this run that reference it —
+derived, not a new `RuleDoc` field, so it cannot drift from the pinned
+per-detector severities.
 
 `dikeConfidence` is **not** emitted with `json!(finding.confidence)`. That
 widens the `f32` to `f64` before anything formats it, and a confidence of
@@ -295,8 +328,15 @@ the same explanation twice rather than two different ones.
 | `unchecked-arithmetic` | Neodyme, "Solana common pitfalls" |
 | `removed-guard` | Anchor account-constraint reference |
 
-Every one of these URLs is already a source in `corpus/sources.toml`, so the
-catalog cites what the retriever cites.
+Every one of these points at a document already in `corpus/sources.toml`, so
+the catalog cites what the retriever cites.
+
+The URL **strings** are not always identical to that manifest's `url` field,
+and deliberately so. `sources.toml` records the machine-fetchable location —
+for sealevel-attacks, a `codeload` tarball — because that is what the fetcher
+downloads. A `helpUri` is clicked by a human reading an alert, so it points at
+the browsable tree path for the matching category instead. Same document,
+different audience.
 
 `tags` are `["security", "solana", "anchor", <class>]`. These strings live in
 `dike-lang-anchor`, where domain vocabulary belongs.
@@ -421,8 +461,11 @@ document.
 | Render twice, compare bytes | reintroducing a clock or a `HashMap` iteration |
 | Relativization: relative path, absolute under base, absolute outside base | dropping any of the three branches |
 | Separator normalization to `/` | emitting native separators |
-| `partialFingerprints` present and equal to `finding.id` | dropping fingerprints |
-| Two reports differing only in `location.line` produce the same fingerprint | putting the line into the ID |
+| `partialFingerprints` present and equal to `finding.id` when the id is non-empty | dropping fingerprints |
+| An empty `finding.id` (a merged finding) omits `partialFingerprints` entirely | emitting the empty string as a fingerprint |
+| A `location.line` of 0 omits `region` but keeps `artifactLocation` | emitting `startLine: 0`, which fails SARIF schema validation |
+| A rule's `security-severity` reflects the max severity among its referencing findings | reading it from a catalog field instead of deriving it |
+| A finding's id does not move when only its line moves | putting the line into the id — pinned at `finding_at` in `dike-lang-anchor`, not at the renderer, which only copies whatever id it is given |
 | Only referenced rules emitted, in catalog order, deduplicated | emitting the full catalog, or one rule per result |
 | Two results of the same class share a `ruleIndex` | duplicating rule entries |
 | Zero findings → valid document with `results: []` and `rules: []` | panicking or emitting `null` |

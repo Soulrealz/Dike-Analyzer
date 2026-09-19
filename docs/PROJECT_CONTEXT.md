@@ -115,7 +115,7 @@ cited a **URL** rather than an offered `doc_id`, so the grounding filter
 correctly dropped it. Retrieval and citation discipline, not output format, are
 where Track 2 is losing.
 
-455 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+567 tests pass. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 
 ---
 
@@ -124,8 +124,11 @@ where Track 2 is losing.
 ```
 .
 ├── .superpowers/              SDD agent scaffolding — GITIGNORED, not project history
-├── .github/workflows/ci.yml   clippy, tests, seam, clean fixture, `eval run --track
-│                               static`. Deliberately NO `cargo fmt` gate (see Quirks)
+├── action.yml                 The composite GitHub Action: build, analyze, upload SARIF
+├── .github/workflows/ci.yml   clippy, tests, seam, clean fixtures, `eval run --track
+│                               static`, and `action-smoke` (the action end to end
+│                               against `leaky_vault`, `upload: false`). Deliberately NO
+│                               `cargo fmt` gate (see Quirks)
 ├── benchmarks/
 │   ├── history.json           The eval series: one EvalSummary per run. COMMITTED —
 │   │                           the harness exists to compare runs over time
@@ -156,7 +159,7 @@ where Track 2 is losing.
 │   │   │   │   ├── holdout.rs   scoring published defects: outcomes, recall, rendering
 │   │   │   │   ├── metrics.rs   per-class, per-track recall/precision + noise floor
 │   │   │   │   └── history.rs   append-only run series (benchmarks/history.json)
-│   │   │   ├── report/        Markdown + JSON renderers, Coverage, RunMetadata
+│   │   │   ├── report/        Markdown + JSON + SARIF renderers, Coverage, RunMetadata
 │   │   │   └── retrieval/     Corpus Document/Source model, chunking, hashing, fetching,
 │   │   │                       BM25 sparse index, dense embedder, sqlite vector store,
 │   │   │                       RRF fusion, the Retrieve seam + HybridRetriever
@@ -169,12 +172,13 @@ where Track 2 is losing.
 │   │   │   ├── detectors/     Six static detectors + the suppression pass
 │   │   │   ├── llm_analyzer/  Track 2 assembled: chunk, retrieve, ask, validate
 │   │   │   ├── mutations/     The six vulnerability-injection operators (Phase 7)
+│   │   │   ├── rules.rs       RuleDoc catalog: the six classes, documented for SARIF consumers
 │   │   │   └── lib.rs         AnchorAnalyzer, analyze_program
 │   │   └── tests/end_to_end.rs
 │   └── dike-cli/              Orchestration only. The ONE place core and Anchor meet.
 │       └── src/
-│           ├── main.rs        clap subcommands: analyze, ir,
-│           │                   eval mutate|run|holdout,
+│           ├── main.rs        clap subcommands: analyze (--format md|json|sarif,
+│           │                   --base-dir), ir, eval mutate|run|holdout,
 │           │                   corpus fetch|index|query|hash
 │           ├── pipeline.rs    Runs both tracks, merges, builds the Report
 │           ├── config.rs      RunConfig
@@ -938,6 +942,34 @@ real constraint. Ordinary choices need no justification.
   still enforces it. The harness would then score a correct silence as a miss,
   which is worse than not measuring the class.
 
+### SARIF severity is mapped faithfully, and that can fail someone's PR check
+
+GitHub fails a pull request's code-scanning check for alerts at `level: error`
+or `security-severity` at or above 7.0, unless the repository owner raises the
+threshold in Settings → Code security → Code scanning → "Protection rules".
+Dike maps `Critical`/`High` to `error` at 9.0/7.0, so on default settings a
+dike alert can block a merge.
+
+The alternative was capping every severity below the threshold so a dike run
+could never gate anything. That was rejected: it would mean reporting a
+critical missing-signer as a medium — a false statement about severity, made
+to work around a UI default in someone else's product.
+
+**Rule 4 is not in tension with this.** Rule 4 governs dike's exit code, which
+is 0 unconditionally, findings or not. What a consumer's CI does with an
+uploaded alert is the consumer's setting, and the README names it.
+
+The map is pinned in the same sense as the per-detector confidences: consumers
+triage against it, so a change moves every alert at once.
+
+### SARIF carries no timestamp, though the JSON report does
+
+`RunMetadata.timestamp` is rendered by the JSON and Markdown reporters and
+deliberately omitted from SARIF. A SARIF document is a CI artifact that gets
+diffed, cached and compared between runs; a clock in it makes every run look
+changed and defeats Rule 5's byte-identical guarantee for the one output most
+likely to be diffed.
+
 ## Licensing (binding)
 
 Audit reports are **published, not public-domain**. The repo commits
@@ -947,6 +979,32 @@ notes and *is* committed.
 
 ## Known gaps
 
+- **A finding merged from multiple sources carries no id, and therefore no
+  SARIF fingerprint (found 2026-09-19, in whole-branch review of the SARIF
+  work).** `merge::corroborate` and the same-track branch of `merge::merge`
+  set `id: String::new()` on the combined finding — reachable on a
+  Track-1-only run, since `collapse_by_subject` can keep two same-class
+  findings on one handler distinct (different subjects) while
+  `Finding::merge_key` still folds them together at `merge()`. `sarif.rs`'s
+  `result_for` now omits `partialFingerprints` entirely when `finding.id` is
+  empty, rather than emitting the empty string as every such finding's
+  fingerprint — which would have made GitHub treat two distinct findings as
+  one alert, silently dropping the other (a reporting-layer false negative,
+  which Rule 3 forbids). GitHub falls back to its own source-hash
+  fingerprinting for these results: degraded, but correct and
+  collision-free. Recomputing a merged id so it carries a real fingerprint is
+  out of scope here — it would move pinned output under Rule 5, and is a
+  decision reserved for the repo owner. See the design spec's "Fingerprints
+  are the load-bearing detail" section for the corrected invariant.
+- **The SARIF fingerprint has no program component.** `Location::handler_id`
+  is `handler` alone (no file, see the entry above on why), so a repository
+  analyzing two programs with a handler of the same name and the same defect
+  produces the same `finding.id` in both, and GitHub matches alerts within a
+  category — the second program's finding does not surface as a separate
+  alert. Not fixed: changing the fingerprint scheme is a `/v1` → `/v2` bump,
+  which the spec designates as the repo owner's call. Documented instead:
+  the README's "In CI" section and `action.yml`'s `category` input both say a
+  multi-program repository must pass a distinct `category` per invocation.
 - **Track 2 invents its own class labels, and nothing yet constrains them.**
   Observed live on 2026-08-31: asked to review an unauthenticated privileged
   operation, the model answered with class

@@ -12,7 +12,7 @@ pub use analyzer::{
     AnalysisResult, Analyzer, Diagnostic, DiagnosticKind, SourceFile, SourceTree, UnitCoverage,
 };
 pub use eval::MutationLabel;
-pub use report::{Coverage, Report, RunMetadata, TrackFindings};
+pub use report::{Coverage, Report, RuleDoc, RunMetadata, TrackFindings};
 pub use llm::{LlmClient, LlmError, LlmRequest};
 pub use retrieval::{
     chunk_by_finding, corpus_hash, is_grounded, load_manifest, Document, HybridRetriever,

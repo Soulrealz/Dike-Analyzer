@@ -187,6 +187,31 @@ mod tests {
         );
     }
 
+    /// The real assertion behind the claim "a finding's id survives a
+    /// refactor": it belongs where the id is computed, not at the SARIF
+    /// renderer, which only copies whatever `finding.id` already is.
+    #[test]
+    fn finding_at_is_stable_when_only_the_line_moves() {
+        use crate::detectors::pda::PdaValidationGapDetector;
+        use crate::detectors::finding_at;
+        use crate::ir::{Handler, HandlerBody};
+        use std::path::{Path, PathBuf};
+
+        let handler = Handler {
+            name: "withdraw".into(),
+            file: PathBuf::from("src/lib.rs"),
+            line: 10,
+            end_line: 20,
+            args: vec![],
+            context_ty: "Withdraw".into(),
+            body: HandlerBody::default(),
+        };
+        let d = PdaValidationGapDetector;
+        let a = finding_at(&d, &handler, Path::new("src/lib.rs"), "vault", 10, "evidence".into());
+        let b = finding_at(&d, &handler, Path::new("src/lib.rs"), "vault", 999, "evidence".into());
+        assert_eq!(a.id, b.id, "the id must not move when only the line moves");
+    }
+
     #[test]
     fn last_segment_authority_words_match() {
         for name in [

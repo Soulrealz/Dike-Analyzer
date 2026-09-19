@@ -97,6 +97,10 @@ pub fn run(cfg: RunConfig) -> anyhow::Result<()> {
     let rendered = match cfg.format {
         Format::Md => report.render_markdown(),
         Format::Json => report.render_json()?,
+        // The CLI is the one place core and the Anchor crate meet (Rule 2):
+        // core defines RuleDoc and knows no class, the Anchor crate fills the
+        // catalog and knows no SARIF, and this line introduces them.
+        Format::Sarif => report.render_sarif(&dike_lang_anchor::rules::catalog(), &cfg.base_dir)?,
     };
     match cfg.out {
         Some(path) => std::fs::write(&path, rendered)

@@ -1,0 +1,75 @@
+name: Dike — Solana Anchor security triage
+description: >-
+  Run dike over an Anchor program and upload the findings to code scanning.
+  Triage, not a gate: dike always exits 0, and findings never fail the run.
+author: Soulrealz
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  path:
+    description: Program directory to analyze, relative to the workspace root.
+    required: true
+  sarif-file:
+    description: Where to write the SARIF document.
+    required: false
+    default: dike.sarif
+  category:
+    description: >-
+      Code-scanning category. Keeps dike's alerts from colliding with another
+      tool's, and lets one repository run dike over several programs. Required
+      to be distinct per program: dike's fingerprint has no program component,
+      so two programs sharing a handler name and defect collide within one
+      category.
+    required: false
+    default: dike
+  upload:
+    description: >-
+      Upload the SARIF to code scanning. Set to "false" to write the file and
+      stop — the path is available as the `sarif-file` output.
+    required: false
+    default: "true"
+
+outputs:
+  sarif-file:
+    description: Path to the written SARIF document.
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    # Keyed on the action's own checkout, not the caller's workspace: what is
+    # being built is dike, which lives here.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ github.action_path }}
+
+    - name: Build dike
+      shell: bash
+      # `cargo install --path` defaults to building in a temporary directory
+      # that is deleted afterwards, which `Swatinem/rust-cache` never sees —
+      # so without this, every consumer run recompiled the whole dependency
+      # tree regardless of the cache above. Pointing CARGO_TARGET_DIR at the
+      # action's own workspace puts the build where `workspaces:
+      # ${{ github.action_path }}` already looks.
+      env:
+        CARGO_TARGET_DIR: ${{ github.action_path }}/target
+      run: cargo install --path "${{ github.action_path }}/crates/dike-cli" --locked
+
+    # Runs from the workspace root, so `--base-dir` stays at its default and
+    # the emitted URIs are workspace-relative — which is what a code-scanning
+    # upload resolves against.
+    - name: Analyze
+      shell: bash
+      run: dike analyze "${{ inputs.path }}" --format sarif --out "${{ inputs.sarif-file }}"
+
+    - name: Upload to code scanning
+      if: inputs.upload == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: ${{ inputs.category }}

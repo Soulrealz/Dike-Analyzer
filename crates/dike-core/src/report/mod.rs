@@ -1,5 +1,8 @@
 mod json;
 mod markdown;
+mod sarif;
+
+pub use sarif::RuleDoc;
 
 use crate::analyzer::Diagnostic;
 use crate::finding::Finding;
@@ -60,6 +63,64 @@ impl Report {
     }
     pub fn render_json(&self) -> serde_json::Result<String> {
         json::render(self)
+    }
+    /// SARIF 2.1.0, for code-scanning upload. `rules` documents the class
+    /// vocabulary — core does not know it — and `base` is stripped from
+    /// emitted paths so they resolve against a repository root.
+    pub fn render_sarif(&self, rules: &[RuleDoc], base: &std::path::Path) -> serde_json::Result<String> {
+        sarif::render(self, rules, base)
+    }
+}
+
+/// Report fixtures shared by the renderer test modules, so `sarif.rs` does
+/// not need its own copy of the constructor.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::{Coverage, Report, RunMetadata, TrackFindings};
+    use crate::analyzer::Diagnostic;
+    use crate::finding::{Finding, Location, Severity, Track, VulnClass};
+    use std::path::PathBuf;
+
+    pub(crate) fn empty_report() -> Report {
+        Report {
+            run: RunMetadata {
+                tool_version: "0.1.0".into(),
+                model: None,
+                corpus_hash: None,
+                timestamp: "2026-08-27T00:00:00Z".into(),
+            },
+            tracks: TrackFindings::default(),
+            diagnostics: Vec::new(),
+            coverage: Coverage::default(),
+        }
+    }
+
+    /// A finding with every optional field populated, so a renderer that
+    /// drops one is caught. `file` is deliberately under `/repo`.
+    pub(crate) fn finding(class: &str, sev: Severity, line: u32, handler: &str) -> Finding {
+        Finding {
+            id: format!("id-{class}-{handler}"),
+            class: VulnClass::new(class),
+            severity: sev,
+            confidence: 0.9,
+            track: Track::Static,
+            location: Location {
+                file: PathBuf::from("/repo/programs/demo/src/lib.rs"),
+                line,
+                handler: handler.to_string(),
+            },
+            evidence: "the declared account is not constrained".into(),
+            citations: Vec::new(),
+            subject: Some("authority".into()),
+            absorbed_handlers: vec!["deposit".into()],
+        }
+    }
+
+    pub(crate) fn report_with(findings: Vec<Finding>, diagnostics: Vec<Diagnostic>) -> Report {
+        let mut r = empty_report();
+        r.tracks.merged = findings;
+        r.diagnostics = diagnostics;
+        r
     }
 }
 

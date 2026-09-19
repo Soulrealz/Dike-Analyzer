@@ -4,6 +4,7 @@ pub mod llm_analyzer;
 pub mod ir;
 pub mod mutations;
 pub mod parser;
+pub mod rules;
 
 use dike_core::analyzer::{
     AnalysisResult, Analyzer, Diagnostic, DiagnosticKind, SourceTree,

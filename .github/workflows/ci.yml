@@ -64,6 +64,61 @@ jobs:
       - name: The eval series is not modified in CI
         run: git checkout -- benchmarks/history.json
 
+  # The action, end to end, against a fixture that actually has findings —
+  # a smoke test over a clean program passes against a renderer that emits an
+  # empty document.
+  #
+  # `upload: false` deliberately. `leaky_vault` is vulnerable on purpose;
+  # uploading its SARIF would file permanent code-scanning alerts against this
+  # repository for a fixture nobody intends to fix, and every contributor
+  # would have to learn to ignore them. The cost is that the upload step is
+  # not exercised here — it is a four-line `uses:` of a Microsoft-maintained
+  # action, and the README's consumer example covers it.
+  action-smoke:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      # No job-level Swatinem/rust-cache step here: `uses: ./` runs the action
+      # against this job's own checkout, so `github.action_path` is this
+      # repository root — the same workspace the action's own internal
+      # rust-cache step (keyed the same way) already caches. A second step
+      # here would race it on an identical cache key.
+
+      - name: Run the action
+        uses: ./
+        with:
+          path: tests/fixtures/programs/leaky_vault
+          sarif-file: dike.sarif
+          upload: false
+
+      - name: The SARIF is well formed and reports the fixture's classes
+        run: |
+          set -euo pipefail
+          python3 - <<'EOF'
+          import json
+          doc = json.load(open("dike.sarif"))
+          assert doc["version"] == "2.1.0", doc.get("version")
+          assert "sarif" in doc["$schema"]
+          run = doc["runs"][0]
+          assert run["invocations"][0]["executionSuccessful"] is True
+          ids = {r["ruleId"] for r in run["results"]}
+          expected = {
+              "missing-signer",
+              "missing-owner-check",
+              "missing-authority-binding",
+              "pda-validation-gap",
+              "unchecked-arithmetic",
+          }
+          assert ids == expected, f"got {sorted(ids)}"
+          assert len(run["results"]) == 7, len(run["results"])
+          assert len(run["tool"]["driver"]["rules"]) == 5
+          for r in run["results"]:
+              uri = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+              assert not uri.startswith("/"), uri
+          print(f"ok: {len(run['results'])} results, {len(run['tool']['driver']['rules'])} rules")
+          EOF
+
   # Optional, and never a reason for a red build: it needs a key that forks and
   # most contributors do not have. Track 2's own model runs locally and GitHub
   # runners have no GPU, so a hosted frontier model is the only way to

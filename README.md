@@ -87,8 +87,14 @@ dike analyze path/to/program
 # JSON, for tooling
 dike analyze path/to/program --format json
 
+# SARIF, for code-scanning upload (see "In CI" below)
+dike analyze path/to/program --format sarif --out dike.sarif
+
 # Write to a file
 dike analyze path/to/program --out report.md
+
+# Strip a different base from emitted SARIF paths (default: current directory)
+dike analyze path/to/program --format sarif --out dike.sarif --base-dir /repo
 
 # Debug: dump the parsed IR
 dike ir path/to/program
@@ -96,6 +102,70 @@ dike ir path/to/program
 
 Run it from the workspace with `cargo run -p dike-cli -- analyze …`, or
 `cargo install --path crates/dike-cli` to get a `dike` binary on your PATH.
+
+## In CI
+
+```yaml
+name: Security triage
+on: [pull_request]
+
+jobs:
+  dike:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required, or the upload fails
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Soulrealz/Dike-Analyzer@master
+        with:
+          path: programs/my-program
+```
+
+Findings appear as pull-request annotations and in the Security tab.
+
+Four things worth knowing before you wire this up:
+
+- **`security-events: write` is required.** Without it the upload fails with a
+  permissions error that does not explain itself.
+- **The first run builds dike from source** and takes several minutes.
+  `Swatinem/rust-cache` is inside the action, keyed on the action's own
+  checkout, and the build step points `CARGO_TARGET_DIR` at the same
+  workspace the cache looks at (`cargo install --path` alone builds in a
+  temporary directory the cache never sees). Whether that actually makes
+  later runs fast has not been verified outside GitHub — see below.
+- **A repository analyzing more than one program must pass a distinct
+  `category` per invocation.** GitHub matches an alert to a fingerprint
+  within a category, and a dike finding's fingerprint has no program
+  component — two programs with a handler of the same name and the same
+  defect collide, and the second program's finding does not surface as its
+  own alert.
+- **A dike alert can fail the check.** GitHub fails a pull request's
+  code-scanning check at `level: error` or `security-severity` ≥ 7.0, and dike
+  maps Critical and High there because that is what they are. Dike itself
+  always exits 0 — it is triage, not a gate — so if you want the check to stay
+  green, raise the threshold in Settings → Code security → Code scanning →
+  "Protection rules". We would rather tell you that than understate a critical.
+
+To write the file without uploading it:
+
+```yaml
+      - uses: Soulrealz/Dike-Analyzer@master
+        with:
+          path: programs/my-program
+          upload: false
+```
+
+Or locally:
+
+```
+dike analyze programs/my-program --format sarif --out dike.sarif
+```
+
+The action itself has only been exercised as a smoke test in this repo's own
+CI (`action-smoke` in `.github/workflows/ci.yml`, against `leaky_vault`, with
+`upload: false`) — the upload step and the cache configuration cannot be
+exercised outside GitHub and have not been tested beyond that.
 
 ### Corpus
 
